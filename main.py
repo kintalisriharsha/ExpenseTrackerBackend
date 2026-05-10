@@ -2,45 +2,106 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from contextlib import asynccontextmanager
-import logging
-import os
 from dotenv import load_dotenv
+import logging
 import uvicorn
+import os
+from api_routes.auth_route import router as auth_router
+from db import create_tables, warmup_connection_pool, close_db, check_db_health
+from auth.firebase import init_firebase
 
 logging.basicConfig(
-    level= logging.WARNING,
-    format='%(levelname)s - %(message)s'
+    level=logging.WARNING,
+    format="%(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
+load_dotenv()
+
+# ── Lifespan ───────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── Startup ────────────────────────────────────────────────────────
+    logger.warning("Starting Expense Tracker API...")
+    init_firebase()                 # initialize Firebase Admin SDK
+    await create_tables()           # create DB tables if not exist
+    await warmup_connection_pool()  # warm up asyncpg connection pool
+    logger.warning("Startup complete")
+
+    yield   # app is running
+
+    # ── Shutdown ───────────────────────────────────────────────────────
+    logger.warning("Shutting down...")
+    await close_db()
+    logger.warning("Shutdown complete")
+
+
+# ── App ────────────────────────────────────────────────────────────────────────
+
 app = FastAPI(
-    title="Expense Tracker Backend",
-    description="API for managing expense tracker",
+    title="Expense Tracker API",
+    description="Backend API for the Expense Tracker Android app",
     version="1.0.0",
-    # lifespan=lifespace
-    redirect_slashes=False
+    lifespan=lifespan,
+    redirect_slashes=False,
 )
 
-# """This is for the websites to check wheater the origins which browser calling was same."""
+# ── Middleware ─────────────────────────────────────────────────────────────────
 
+# CORS — commented out (Android Retrofit does not need CORS)
+# Uncomment if you add a web dashboard later
 # app.add_middleware(
 #     CORSMiddleware,
-#     allow_origins = ["*"],
-#     allow_methods = ["*"],
-#     allow_headers = ["*"]
+#     allow_origins=["*"],
+#     allow_methods=["*"],
+#     allow_headers=["*"],
 # )
 
-"""Only allow the https requests for retrofit"""
-app.add_middleware(HTTPSRedirectMiddleware)
+# HTTPS redirect — uncomment on production only
+# app.add_middleware(HTTPSRedirectMiddleware)
+
+# ── Routers ────────────────────────────────────────────────────────────────────
+
+app.include_router(auth_router)
+
+# Uncomment as you build each feature
+# from routers.expense_router  import router as expense_router
+# from routers.budget_router   import router as budget_router
+# from routers.goals_router    import router as goals_router
+# from routers.profile_router  import router as profile_router
+
+# app.include_router(expense_router)
+# app.include_router(budget_router)
+# app.include_router(goals_router)
+# app.include_router(profile_router)
+
+# ── Root ───────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
-    """Root Endpoint"""
-    return{
-        "message": "Root API",
+    """Root endpoint"""
+    return {
+        "message": "Expense Tracker API",
         "version": "1.0.0",
-        "docs":"/docs"
-        }
+        "docs":    "/docs",
+    }
+
+# ── Health check ───────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    """
+    Health check — returns DB connection status and pool stats.
+    Used by Render / Railway to verify the app is alive.
+    """
+    db_health = await check_db_health()
+    return {
+        "api":      "healthy",
+        "database": db_health,
+    }
+
+# ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     uvicorn.run(
@@ -48,5 +109,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="info"
+        log_level="info",
     )

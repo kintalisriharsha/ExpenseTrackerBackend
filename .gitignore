@@ -1,0 +1,24 @@
+# Environment
+.env
+*.env
+
+# Firebase service account — NEVER commit this
+serviceAccountKey.json
+*serviceAccount*.json
+firebase-adminsdk*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Alembic
+alembic.ini
+
+# IDE
+.idea/
+.vscode/
+*.iml
