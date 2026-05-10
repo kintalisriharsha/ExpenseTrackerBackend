@@ -1,13 +1,14 @@
 from fastapi import FastAPI
-# from fastapi.middleware.cors import CORSMiddleware
-# from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 import logging
 import uvicorn
 import os
-
+from api_routes.auth_route import router as auth_router
 from db import create_tables, warmup_connection_pool, close_db, check_db_health
+from auth.firebase import init_firebase
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -18,21 +19,20 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
-# Runs once on startup → yields → runs once on shutdown
-# Replaces the old @app.on_event("startup") pattern
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ────────────────────────────────────────────────────────
     logger.warning("Starting Expense Tracker API...")
-    await create_tables()
-    await warmup_connection_pool()
+    init_firebase()                 # initialize Firebase Admin SDK
+    await create_tables()           # create DB tables if not exist
+    await warmup_connection_pool()  # warm up asyncpg connection pool
     logger.warning("Startup complete")
 
     yield   # app is running
 
     # ── Shutdown ───────────────────────────────────────────────────────
-    logger.warning("Shutting down Expense Tracker API...")
+    logger.warning("Shutting down...")
     await close_db()
     logger.warning("Shutdown complete")
 
@@ -49,7 +49,7 @@ app = FastAPI(
 
 # ── Middleware ─────────────────────────────────────────────────────────────────
 
-# CORS — commented out for now (Android Retrofit does not need CORS)
+# CORS — commented out (Android Retrofit does not need CORS)
 # Uncomment if you add a web dashboard later
 # app.add_middleware(
 #     CORSMiddleware,
@@ -58,20 +58,19 @@ app = FastAPI(
 #     allow_headers=["*"],
 # )
 
-# HTTPS redirect — uncomment on production deployment only
-# Keeping this off locally so uvicorn --reload works over http://
+# HTTPS redirect — uncomment on production only
 # app.add_middleware(HTTPSRedirectMiddleware)
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-# Uncomment each router as you build it
 
-# from routers.auth_router       import router as auth_router
-# from routers.expense_router    import router as expense_router
-# from routers.budget_router     import router as budget_router
-# from routers.goals_router      import router as goals_router
-# from routers.profile_router    import router as profile_router
+app.include_router(auth_router)
 
-# app.include_router(auth_router)
+# Uncomment as you build each feature
+# from routers.expense_router  import router as expense_router
+# from routers.budget_router   import router as budget_router
+# from routers.goals_router    import router as goals_router
+# from routers.profile_router  import router as profile_router
+
 # app.include_router(expense_router)
 # app.include_router(budget_router)
 # app.include_router(goals_router)
@@ -93,9 +92,8 @@ async def root():
 @app.get("/health")
 async def health():
     """
-    Health check endpoint.
-    Returns DB connection status and pool stats.
-    Useful for deployment platforms (Render, Railway) to verify the app is alive.
+    Health check — returns DB connection status and pool stats.
+    Used by Render / Railway to verify the app is alive.
     """
     db_health = await check_db_health()
     return {
