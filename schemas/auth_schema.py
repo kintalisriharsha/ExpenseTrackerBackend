@@ -1,28 +1,22 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 
 
 # ── Requests ───────────────────────────────────────────────────────────────────
 
-class FirebaseLoginRequest(BaseModel):
-    id_token: str = Field(..., description="Firebase ID token from Android SDK")
+class SendOtpRequest(BaseModel):
+    email: EmailStr
 
 
-class RegisterRequest(BaseModel):
-    """
-    POST /auth/register — called after OTP verification on the signup flow.
+class VerifyOtpRequest(BaseModel):
+    email:        EmailStr
+    otp:          str   = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+    display_name: Optional[str] = Field(None, max_length=255)
 
-    Android sends all 4 fields once Firebase OTP is confirmed:
-        id_token       → Firebase ID token (proves phone ownership)
-        display_name   → Full name from SignUpScreen
-        daily_budget   → Can be 0.0 if user skips budget setup
-        monthly_budget → Can be 0.0 if user skips budget setup
-    """
-    id_token       : str   = Field(...,  description="Firebase ID token from OTP verification")
-    display_name   : str   = Field(...,  min_length=1, max_length=255)
-    daily_budget   : float = Field(0.0, ge=0.0)
-    monthly_budget : float = Field(0.0, ge=0.0)
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str = Field(..., description="Google ID token from Android Sign-In SDK")
 
 
 class RefreshTokenRequest(BaseModel):
@@ -30,20 +24,26 @@ class RefreshTokenRequest(BaseModel):
 
 
 class LogoutRequest(BaseModel):
-    refresh_token: str = Field(..., description="The refresh token to invalidate")
+    refresh_token: str
 
 
 # ── Responses ──────────────────────────────────────────────────────────────────
 
 class UserResponse(BaseModel):
     id             : int
-    phone_number   : str
+    email          : str
     display_name   : Optional[str]
+    auth_provider  : str
+    email_verified : bool
     daily_budget   : float
     monthly_budget : float
     created_at     : datetime
 
     model_config = {"from_attributes": True}
+
+
+class SendOtpResponse(BaseModel):
+    detail: str = "OTP sent to your email"
 
 
 class LoginResponse(BaseModel):
@@ -54,16 +54,9 @@ class LoginResponse(BaseModel):
     user          : UserResponse
 
 
-class RegisterResponse(BaseModel):
-    access_token  : str
-    refresh_token : str
-    token_type    : str = "bearer"
-    user          : UserResponse
-
-
 class RefreshResponse(BaseModel):
-    access_token : str
-    token_type   : str = "bearer"
+    access_token: str
+    token_type  : str = "bearer"
 
 
 class LogoutResponse(BaseModel):
