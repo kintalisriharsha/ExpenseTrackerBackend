@@ -8,4 +8,4 @@ bcrypt
 python-jose[cryptography]
 passlib[bcrypt]
 alembic
-firebase-admin
+pydantic[email]

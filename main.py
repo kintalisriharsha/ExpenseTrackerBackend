@@ -8,7 +8,6 @@ import uvicorn
 import os
 from api_routes.auth_route import router as auth_router
 from db import create_tables, warmup_connection_pool, close_db, check_db_health
-from auth.firebase import init_firebase
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -24,7 +23,6 @@ load_dotenv()
 async def lifespan(app: FastAPI):
     # ── Startup ────────────────────────────────────────────────────────
     logger.warning("Starting Expense Tracker API...")
-    init_firebase()                 # initialize Firebase Admin SDK
     await create_tables()           # create DB tables if not exist
     await warmup_connection_pool()  # warm up asyncpg connection pool
     logger.warning("Startup complete")
@@ -100,6 +98,11 @@ async def health():
         "api":      "healthy",
         "database": db_health,
     }
+
+
+# ── Swagger Ui login ────────────────────────────────────────────────────────────────
+
+
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 

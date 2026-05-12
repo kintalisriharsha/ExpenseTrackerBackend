@@ -4,14 +4,14 @@ from datetime import datetime, timezone
 import logging
 
 from db import get_db
-from auth.jwt import (
+from auth.auth import (
     create_access_token,
     create_refresh_token,
     decode_token,
     get_current_user,
 )
-from auth.otp    import generate_otp, hash_otp, send_otp_email
-from auth.google import verify_google_token
+from services.otp import generate_otp, hash_otp, send_otp_email
+from auth.Google import verify_google_token
 from crud.auth_crud import (
     upsert_otp,
     verify_and_clear_otp,

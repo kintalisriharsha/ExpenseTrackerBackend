@@ -3,6 +3,7 @@ from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException, status
 import logging
+from services.otp import verify_otp_hash   # local import avoids circular
 
 from models.user_model import User, BlacklistedToken, AuthProvider
 
@@ -78,8 +79,7 @@ async def verify_and_clear_otp(
     Returns (user, is_new_user).
     Raises HTTP 400/410 on bad/expired OTP.
     """
-    from auth.otp import verify_otp_hash   # local import avoids circular
-
+    
     user = await get_user_by_email(db, email)
     if not user or not user.hashed_otp:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
