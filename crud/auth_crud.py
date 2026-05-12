@@ -1,167 +1,182 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException, status
 import logging
 
-from models.user_model import User
-from models.user_model import BlacklistedToken
+from models.user_model import User, BlacklistedToken, AuthProvider
 
 logger = logging.getLogger(__name__)
 
+OTP_TTL_MINUTES = 10
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# USER CRUD
+# USER LOOKUPS
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def get_user_by_firebase_uid(
-    db: AsyncSession,
-    firebase_uid: str
-) -> User | None:
-    """
-    Fetch user by Firebase UID.
-    Uses idx_users_firebase_uid index — fast lookup on every login.
-    """
+async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
     try:
-        stmt   = select(User).where(User.firebase_uid == firebase_uid)
-        result = await db.execute(stmt)
+        result = await db.execute(select(User).where(User.email == email))
         return result.scalars().first()
     except Exception as e:
-        logger.error(f"Error fetching user by firebase_uid: {e}")
+        logger.error(f"get_user_by_email error: {e}")
         return None
 
 
-async def get_user_by_id(
-    db: AsyncSession,
-    user_id: int
-) -> User | None:
-    """
-    Fetch user by Neon DB id.
-    Used by GET /auth/me and POST /auth/refresh.
-    """
+async def get_user_by_google_sub(db: AsyncSession, google_sub: str) -> User | None:
     try:
-        stmt   = select(User).where(User.id == user_id)
-        result = await db.execute(stmt)
+        result = await db.execute(select(User).where(User.google_sub == google_sub))
         return result.scalars().first()
     except Exception as e:
-        logger.error(f"Error fetching user by id: {e}")
+        logger.error(f"get_user_by_google_sub error: {e}")
         return None
 
 
-async def create_user(
-    db           : AsyncSession,
-    firebase_uid : str,
-    phone_number : str,
-    display_name : str | None = None,
-    daily_budget : float = 0.0,
-    monthly_budget: float = 0.0,
-) -> User:
-    """
-    Create a new user in Neon DB.
-
-    Called by:
-        - POST /auth/register  → all 4 fields provided upfront
-        - get_or_create_user   → only firebase_uid + phone (login flow)
-
-    display_name, daily_budget, monthly_budget default to None/0 if not provided
-    so the login flow still works without them.
-    """
+async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
     try:
-        # Race condition guard — check again before insert
-        existing = await get_user_by_firebase_uid(db, firebase_uid)
-        if existing:
-            return existing
+        result = await db.execute(select(User).where(User.id == user_id))
+        return result.scalars().first()
+    except Exception as e:
+        logger.error(f"get_user_by_id error: {e}")
+        return None
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EMAIL + OTP FLOW
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def upsert_otp(db: AsyncSession, email: str, hashed_otp: str) -> None:
+    """
+    Store the hashed OTP on the user row.
+    Creates a bare (unverified) user record if one doesn't exist yet —
+    full profile is filled in on successful OTP verify.
+    """
+    user = await get_user_by_email(db, email)
+    if not user:
         user = User(
-            firebase_uid   = firebase_uid,
-            phone_number   = phone_number,
-            display_name   = display_name,
-            daily_budget   = daily_budget,
-            monthly_budget = monthly_budget,
+            email         = email,
+            auth_provider = AuthProvider.email,
+            email_verified= False,
         )
         db.add(user)
-        await db.flush()
-        await db.refresh(user)
+        await db.flush()   # get id without committing
 
-        logger.warning(f"New user created: id={user.id} phone={user.phone_number}")
-        return user
-
-    except Exception as e:
-        logger.error(f"Error creating user: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create user"
-        )
+    user.hashed_otp     = hashed_otp
+    user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_TTL_MINUTES)
+    await db.flush()
 
 
-async def get_or_create_user(
-    db           : AsyncSession,
-    firebase_uid : str,
-    phone_number : str,
+async def verify_and_clear_otp(
+    db          : AsyncSession,
+    email       : str,
+    plain_otp   : str,
+    display_name: str | None,
 ) -> tuple[User, bool]:
     """
-    Login or Register in one call (used by /auth/login Firebase flow).
+    Validate the OTP, clear it, mark email verified.
     Returns (user, is_new_user).
-        is_new_user=True  → first time login → Android shows onboarding
-        is_new_user=False → returning user   → go straight to home screen
+    Raises HTTP 400/410 on bad/expired OTP.
     """
-    user = await get_user_by_firebase_uid(db, firebase_uid)
+    from auth.otp import verify_otp_hash   # local import avoids circular
+
+    user = await get_user_by_email(db, email)
+    if not user or not user.hashed_otp:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="No OTP requested for this email")
+
+    now = datetime.now(timezone.utc)
+    if user.otp_expires_at and user.otp_expires_at.replace(tzinfo=timezone.utc) < now:
+        raise HTTPException(status_code=status.HTTP_410_GONE,
+                            detail="OTP has expired — request a new one")
+
+    if not verify_otp_hash(plain_otp, user.hashed_otp):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid OTP")
+
+    is_new_user = not user.email_verified   # first successful verify = new user
+
+    # Clear OTP, mark verified, optionally set name
+    user.hashed_otp     = None
+    user.otp_expires_at = None
+    user.email_verified = True
+    if display_name and not user.display_name:
+        user.display_name = display_name
+
+    await db.flush()
+    return user, is_new_user
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GOOGLE SSO FLOW
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def get_or_create_google_user(
+    db          : AsyncSession,
+    google_sub  : str,
+    email       : str,
+    display_name: str | None,
+) -> tuple[User, bool]:
+    """
+    Find user by google_sub first (most reliable).
+    Fall back to email lookup in case they previously signed up with email OTP
+    — if so, link their Google sub to the existing account.
+    Returns (user, is_new_user).
+    """
+    # 1. Look up by Google's stable sub
+    user = await get_user_by_google_sub(db, google_sub)
     if user:
         return user, False
 
-    user = await create_user(db, firebase_uid, phone_number)
+    # 2. Same email already exists (was an email+OTP user) — link Google sub
+    user = await get_user_by_email(db, email)
+    if user:
+        user.google_sub    = google_sub
+        user.email_verified = True       # Google guarantees email_verified
+        if display_name and not user.display_name:
+            user.display_name = display_name
+        await db.flush()
+        return user, False
+
+    # 3. Brand new user
+    user = User(
+        email          = email,
+        display_name   = display_name,
+        auth_provider  = AuthProvider.google,
+        google_sub     = google_sub,
+        email_verified = True,
+    )
+    db.add(user)
+    await db.flush()
+    logger.warning(f"New Google user created: id={user.id} email={email}")
     return user, True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BLACKLIST CRUD
+# TOKEN BLACKLIST
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def blacklist_token(
-    db         : AsyncSession,
-    jti        : str,
-    user_id    : int,
-    expires_at : datetime,
+    db        : AsyncSession,
+    jti       : str,
+    user_id   : int,
+    expires_at: datetime,
 ) -> None:
-    """
-    Add a refresh token's jti to the blacklist.
-    Called by DELETE /auth/logout.
-
-    We store expires_at so a cleanup job can delete expired rows later
-    with: DELETE FROM blacklisted_tokens WHERE expires_at < NOW()
-    """
     try:
-        entry = BlacklistedToken(
-            jti        = jti,
-            user_id    = user_id,
-            expires_at = expires_at,
-        )
-        db.add(entry)
+        db.add(BlacklistedToken(jti=jti, user_id=user_id, expires_at=expires_at))
         await db.flush()
-        logger.info(f"Token blacklisted: jti={jti} user_id={user_id}")
     except Exception as e:
-        logger.error(f"Error blacklisting token: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to logout"
-        )
+        logger.error(f"blacklist_token error: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to logout")
 
 
-async def is_token_blacklisted(
-    db  : AsyncSession,
-    jti : str,
-) -> bool:
-    """
-    Check if a refresh token's jti is in the blacklist.
-    Called by POST /auth/refresh before issuing a new access token.
-
-    Uses idx_blacklisted_tokens_jti index — single fast lookup.
-    """
+async def is_token_blacklisted(db: AsyncSession, jti: str) -> bool:
     try:
-        stmt   = select(BlacklistedToken).where(BlacklistedToken.jti == jti)
-        result = await db.execute(stmt)
+        result = await db.execute(
+            select(BlacklistedToken).where(BlacklistedToken.jti == jti)
+        )
         return result.scalars().first() is not None
-    except Exception as e:
-        logger.error(f"Error checking blacklist: {e}")
-        # Fail closed — if we can't check, treat as blacklisted
-        return True
+    except Exception as e:    
+        logger.error(f"is_token_blacklisted error: {e}")
+        return True   # fail closed
