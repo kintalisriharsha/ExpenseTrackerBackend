@@ -4,27 +4,30 @@ from datetime import datetime, timezone
 import logging
 
 from db import get_db
-from auth.firebase import verify_firebase_token
-from auth.auth import (
+from auth.jwt import (
     create_access_token,
     create_refresh_token,
     decode_token,
     get_current_user,
 )
+from auth.otp    import generate_otp, hash_otp, send_otp_email
+from auth.google import verify_google_token
 from crud.auth_crud import (
-    get_or_create_user,
+    upsert_otp,
+    verify_and_clear_otp,
+    get_or_create_google_user,
     get_user_by_id,
-    create_user,
     blacklist_token,
     is_token_blacklisted,
 )
 from schemas.auth_schema import (
-    FirebaseLoginRequest,
-    RegisterRequest,
+    SendOtpRequest,
+    VerifyOtpRequest,
+    GoogleLoginRequest,
     RefreshTokenRequest,
     LogoutRequest,
+    SendOtpResponse,
     LoginResponse,
-    RegisterResponse,
     RefreshResponse,
     LogoutResponse,
     UserResponse,
@@ -35,240 +38,238 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-# ── POST /auth/login ───────────────────────────────────────────────────────────
+# ── POST /auth/email/send-otp ──────────────────────────────────────────────────
 
-@router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
-async def login(
-    payload: FirebaseLoginRequest,
+@router.post(
+    "/email/send-otp",
+    response_model=SendOtpResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def send_otp(
+    payload: SendOtpRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Login or Register with Firebase phone authentication.
+    Step 1 of email login.
 
-    Android flow:
-        1. User enters phone → Firebase sends OTP SMS
-        2. User enters OTP  → Firebase verifies it
-        3. Firebase returns id_token to Android
-        4. Android sends id_token here
+    - Generates a 6-digit OTP
+    - Stores its SHA-256 hash + expiry on the user row (creating a bare
+      unverified record if this email has never been seen before)
+    - Emails the plain OTP via SMTP
 
-    This endpoint:
-        1. Verifies id_token with Firebase Admin SDK
-        2. Creates user in Neon DB if first login (register)
-        3. Fetches user if returning (login)
-        4. Returns JWT access + refresh tokens
-
-    is_new_user in response:
-        true  → show onboarding / profile setup screen
-        false → go straight to home screen
+    Android should call this whenever the user submits their email address.
     """
-    decoded = await verify_firebase_token(payload.id_token)
+    otp        = generate_otp()
+    hashed     = hash_otp(otp)
 
-    firebase_uid = decoded.get("uid")
-    phone_number = decoded.get("phone_number")
+    await upsert_otp(db, payload.email, hashed)
 
-    if not firebase_uid or not phone_number:
+    try:
+        await send_otp_email(payload.email, otp)
+    except Exception:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Firebase token — missing uid or phone_number"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to send OTP email — please try again",
         )
 
-    user, is_new_user = await get_or_create_user(db, firebase_uid, phone_number)
+    return SendOtpResponse()
+
+
+# ── POST /auth/email/verify-otp ───────────────────────────────────────────────
+
+@router.post(
+    "/email/verify-otp",
+    response_model=LoginResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def verify_otp(
+    payload: VerifyOtpRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Step 2 of email login.
+
+    - Validates the OTP (wrong → 400, expired → 410)
+    - Clears OTP fields, marks email_verified = True
+    - Issues JWT access + refresh tokens
+
+    is_new_user in response:
+        true  → first ever successful verify → show onboarding / name setup
+        false → returning user               → go straight to home screen
+
+    display_name is optional — Android can send it on the first login
+    so the user doesn't need a separate profile-setup step.
+    """
+    user, is_new_user = await verify_and_clear_otp(
+        db,
+        payload.email,
+        payload.otp,
+        payload.display_name,
+    )
 
     access_token  = create_access_token(user)
     refresh_token = create_refresh_token(user)
 
     logger.warning(
-        f"{'New user registered' if is_new_user else 'User logged in'}: "
-        f"id={user.id} phone={user.phone_number}"
+        f"{'New' if is_new_user else 'Returning'} email user: "
+        f"id={user.id} email={user.email}"
     )
 
     return LoginResponse(
         access_token  = access_token,
         refresh_token = refresh_token,
-        token_type    = "bearer",
         is_new_user   = is_new_user,
         user          = UserResponse.model_validate(user),
     )
 
 
-# ── POST /auth/register ────────────────────────────────────────────────────────
+# ── POST /auth/google ─────────────────────────────────────────────────────────
 
-@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
-async def register(
-    payload: RegisterRequest,
+@router.post(
+    "/google",
+    response_model=LoginResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def google_login(
+    payload: GoogleLoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Register a new user with full details after OTP verification.
+    Google SSO login (Android One Tap / Sign-In SDK).
 
-    Android signup flow:
-        1. SignUpScreen collects: display_name, email, phone, password
-        2. OtpVerifyScreen sends OTP → Firebase verifies
-        3. Firebase returns id_token
-        4. Android calls this endpoint with id_token + the 4 fields
+    Android flow:
+        1. User taps "Sign in with Google"
+        2. Google returns an ID token to the app
+        3. App posts that token here
 
-    The 4 fields:
-        id_token       → proves phone ownership via Firebase
-        display_name   → full name from SignUpScreen
-        daily_budget   → from budget setup (0.0 if skipped)
-        monthly_budget → from budget setup (0.0 if skipped)
+    Server flow:
+        1. Verify token signature + audience with google-auth library
+        2. Upsert user (create if new, link if email already exists)
+        3. Return JWT pair
 
-    Note: email and password from SignUpScreen are handled by Firebase Auth,
-    not stored in your Neon DB. Only phone is stored — it comes from the
-    decoded Firebase token, not from the request body, so it can't be spoofed.
+    If the user previously signed up with email+OTP using the same Gmail
+    address, their accounts are automatically merged — the Google sub is
+    attached to the existing row.
     """
-    decoded = await verify_firebase_token(payload.id_token)
+    info = verify_google_token(payload.id_token)
 
-    firebase_uid = decoded.get("uid")
-    phone_number = decoded.get("phone_number")
+    google_sub   = info.get("sub")
+    email        = info.get("email")
+    display_name = info.get("name")
 
-    if not firebase_uid or not phone_number:
+    if not google_sub or not email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Firebase token — missing uid or phone_number"
+            detail="Google token missing sub or email",
         )
 
-    user = await create_user(
-        db             = db,
-        firebase_uid   = firebase_uid,
-        phone_number   = phone_number,
-        display_name   = payload.display_name,
-        daily_budget   = payload.daily_budget,
-        monthly_budget = payload.monthly_budget,
+    if not info.get("email_verified", False):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google email is not verified",
+        )
+
+    user, is_new_user = await get_or_create_google_user(
+        db, google_sub, email, display_name
     )
 
     access_token  = create_access_token(user)
     refresh_token = create_refresh_token(user)
 
-    logger.warning(f"User registered via /register: id={user.id} phone={user.phone_number}")
+    logger.warning(
+        f"Google login: id={user.id} email={user.email} new={is_new_user}"
+    )
 
-    return RegisterResponse(
+    return LoginResponse(
         access_token  = access_token,
         refresh_token = refresh_token,
-        token_type    = "bearer",
+        is_new_user   = is_new_user,
         user          = UserResponse.model_validate(user),
     )
 
 
-# ── POST /auth/refresh ─────────────────────────────────────────────────────────
+# ── POST /auth/refresh ────────────────────────────────────────────────────────
 
-@router.post("/refresh", response_model=RefreshResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/refresh",
+    response_model=RefreshResponse,
+    status_code=status.HTTP_200_OK,
+)
 async def refresh_token(
     payload: RefreshTokenRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get a new access_token using the refresh_token.
-
-    Android calls this when:
-        - API returns 401 Unauthorized
-        - access_token is about to expire (every ~15 min)
-
-    Now checks blacklist first — if user has logged out, this returns 401.
+    Exchange a valid refresh token for a new access token.
+    Returns 401 if the refresh token has been blacklisted (logged out).
     """
     token_payload = decode_token(payload.refresh_token, expected_type="refresh")
-    user_id       = int(token_payload.get("sub"))
+    user_id       = int(token_payload["sub"])
     jti           = token_payload.get("jti")
 
-    # ── Blacklist check ────────────────────────────────────────────────────────
     if not jti:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token — missing jti"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid refresh token — missing jti")
 
     if await is_token_blacklisted(db, jti):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has been revoked — please log in again"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Token revoked — please log in again")
 
-    # ── Fetch latest user — budget may have changed since last login ───────────
     user = await get_user_by_id(db, user_id)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="User not found")
 
-    new_access_token = create_access_token(user)
-
-    return RefreshResponse(
-        access_token = new_access_token,
-        token_type   = "bearer",
-    )
+    return RefreshResponse(access_token=create_access_token(user))
 
 
-# ── DELETE /auth/logout ────────────────────────────────────────────────────────
+# ── DELETE /auth/logout ───────────────────────────────────────────────────────
 
-@router.delete("/logout", response_model=LogoutResponse, status_code=status.HTTP_200_OK)
+@router.delete(
+    "/logout",
+    response_model=LogoutResponse,
+    status_code=status.HTTP_200_OK,
+)
 async def logout(
-    payload      : LogoutRequest,
-    db           : AsyncSession = Depends(get_db),
-    current_user : dict        = Depends(get_current_user),
+    payload     : LogoutRequest,
+    db          : AsyncSession = Depends(get_db),
+    current_user: dict         = Depends(get_current_user),
 ):
     """
-    Logout — invalidate the refresh token server-side.
-
-    Android flow:
-        1. Call DELETE /auth/logout with refresh_token in body
-        2. Delete access_token + refresh_token from EncryptedSharedPreferences
-        3. Navigate to login screen
-
-    Server flow:
-        1. Verify the refresh token is valid (not already expired)
-        2. Extract jti from the token
-        3. Store jti in blacklisted_tokens table
-        4. /auth/refresh will now reject this token forever
-
-    Access token note:
-        We don't blacklist the access token — it expires in 15 min anyway.
-        Only the refresh token can get new access tokens, so blacklisting it
-        is sufficient for true server-side logout.
+    Invalidate the refresh token server-side.
+    The access token expires on its own within 15 minutes.
     """
     try:
         token_payload = decode_token(payload.refresh_token, expected_type="refresh")
     except Exception:
-        # Token already expired — logout is effectively done
-        return LogoutResponse(detail="Successfully logged out")
+        return LogoutResponse()   # already expired — effectively logged out
 
     jti        = token_payload.get("jti")
-    expires_at = datetime.fromtimestamp(token_payload.get("exp"), tz=timezone.utc)
+    expires_at = datetime.fromtimestamp(token_payload["exp"], tz=timezone.utc)
 
     if not jti:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid refresh token — missing jti"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid refresh token — missing jti")
 
-    await blacklist_token(
-        db         = db,
-        jti        = jti,
-        user_id    = current_user["id"],
-        expires_at = expires_at,
-    )
-
+    await blacklist_token(db, jti, current_user["id"], expires_at)
     logger.warning(f"User logged out: id={current_user['id']}")
+    return LogoutResponse()
 
-    return LogoutResponse(detail="Successfully logged out")
 
+# ── GET /auth/me ──────────────────────────────────────────────────────────────
 
-# ── GET /auth/me ───────────────────────────────────────────────────────────────
-
-@router.get("/me", response_model=UserResponse, status_code=status.HTTP_200_OK)
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
 async def get_me(
-    db           : AsyncSession = Depends(get_db),
-    current_user : dict        = Depends(get_current_user),
+    db          : AsyncSession = Depends(get_db),
+    current_user: dict         = Depends(get_current_user),
 ):
-    """
-    Returns the currently authenticated user's profile.
-    Used by Profile screen to load user details.
-    Requires valid access_token in Authorization header.
-    """
+    """Return the authenticated user's profile."""
     user = await get_user_by_id(db, current_user["id"])
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="User not found")
     return UserResponse.model_validate(user)
