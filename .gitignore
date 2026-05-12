@@ -22,3 +22,5 @@ alembic.ini
 .idea/
 .vscode/
 *.iml
+
+.gitignore
