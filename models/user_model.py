@@ -18,40 +18,30 @@ class User(Base):
     id             = Column(BigInteger, primary_key=True, autoincrement=True)
     email          = Column(String(255), nullable=False, unique=True)
     display_name   = Column(String(255), nullable=True)
+    mobile_number  = Column(String(20),  nullable=True, unique=True)   # ← NEW: stored without formatting
     auth_provider  = Column(Enum(AuthProvider), nullable=False, default=AuthProvider.email)
     email_verified = Column(Boolean, nullable=False, default=False)
 
-    # OTP fields — only used for email provider; NULL for Google users
+    # OTP fields — email provider only; always NULL for Google users
     hashed_otp     = Column(Text,    nullable=True)
     otp_expires_at = Column(DateTime(timezone=True), nullable=True)
-    # Brute-force counter: incremented on each wrong OTP guess,
-    # reset to 0 on new OTP issue or successful verify.
-    otp_attempts   = Column(Integer, nullable=False, default=0)
+    otp_attempts   = Column(Integer, nullable=False, default=0)        # ← NEW: brute-force counter
 
-    # Google sub (provider's unique user ID) — NULL for email users
-    google_sub     = Column(Text, nullable=True, unique=True)
+    # Google SSO
+    google_sub = Column(Text, nullable=True, unique=True)
 
     daily_budget   = Column(Numeric(12, 2), nullable=False, default=0.0)
     monthly_budget = Column(Numeric(12, 2), nullable=False, default=0.0)
 
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now()
-    )
-    # NOTE: onupdate=func.now() is unreliable with the async ORM —
-    # it fires for Core UPDATE statements but not always for ORM-level flushes.
-    # We set updated_at manually in every CRUD write instead.
-    # The server_default ensures it's always populated on INSERT.
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # updated_at has no onupdate= because that is unreliable in async ORM.
+    # Every CRUD write sets it manually: user.updated_at = datetime.now(timezone.utc)
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
-        Index("idx_users_email",      "email"),
-        Index("idx_users_google_sub", "google_sub"),
+        Index("idx_users_email",         "email"),
+        Index("idx_users_google_sub",    "google_sub"),
+        Index("idx_users_mobile_number", "mobile_number"),
     )
 
     def __repr__(self):
@@ -70,7 +60,6 @@ class BlacklistedToken(Base):
     __table_args__ = (
         Index("idx_blacklisted_tokens_jti",     "jti"),
         Index("idx_blacklisted_tokens_user_id", "user_id"),
-        # expires_at index speeds up the cleanup query that deletes old rows
         Index("idx_blacklisted_tokens_expires", "expires_at"),
     )
 
