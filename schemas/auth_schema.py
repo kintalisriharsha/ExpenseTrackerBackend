@@ -10,9 +10,12 @@ class SendOtpRequest(BaseModel):
 
 
 class VerifyOtpRequest(BaseModel):
+    """Step 2 of email login. OTP must be exactly 6 digits."""
     email:        EmailStr
     otp:          str  = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
-    display_name: Optional[str] = Field(None, max_length=255)
+    # Only used on the very first verify (is_new_user=true) → CreateAccount screen
+    display_name:  Optional[str] = Field(None, max_length=255)
+    mobile_number: Optional[str] = Field(None, max_length=20)
 
 
 class GoogleLoginRequest(BaseModel):
@@ -28,7 +31,9 @@ class LogoutRequest(BaseModel):
 
 
 class UpdateProfileRequest(BaseModel):
-    display_name: str = Field(..., min_length=1, max_length=255)
+    """Sent from the CreateAccount / Profile edit screen."""
+    display_name:  Optional[str] = Field(None, min_length=1, max_length=255)
+    mobile_number: Optional[str] = Field(None, max_length=20)
 
 
 class UpdateBudgetRequest(BaseModel):
@@ -42,6 +47,7 @@ class UserResponse(BaseModel):
     id             : int
     email          : str
     display_name   : Optional[str]
+    mobile_number  : Optional[str]           # ← NEW
     auth_provider  : str
     email_verified : bool
     daily_budget   : float
