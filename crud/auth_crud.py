@@ -2,16 +2,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException, status
-import logging
+import logging, secrets, hashlib
 
-from auth.auth import verify_otp_hash          # uses constant-time compare
 from models.user_model import User, BlacklistedToken, AuthProvider
 
 logger = logging.getLogger(__name__)
 
-OTP_TTL_MINUTES      = 10
-OTP_RESEND_COOLDOWN  = 60   # seconds — prevent spam: must wait 60s before re-requesting
-OTP_MAX_ATTEMPTS     = 5    # lock OTP after 5 wrong guesses in a window
+OTP_TTL_MINUTES     = 10
+OTP_RESEND_COOLDOWN = 60   # seconds — must wait before requesting another OTP
+OTP_MAX_ATTEMPTS    = 5    # wrong guesses before the OTP is invalidated
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _to_utc(dt: datetime) -> datetime:
+    """Always return a UTC-aware datetime, whether the input is naive or aware."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _verify_otp_hash(plain: str, stored_hash: str) -> bool:
+    candidate = hashlib.sha256(plain.encode()).hexdigest()
+    return secrets.compare_digest(candidate, stored_hash)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -52,32 +65,24 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
 async def upsert_otp(db: AsyncSession, email: str, hashed_otp: str) -> None:
     """
     Store the hashed OTP on the user row.
-    Creates a bare (unverified) user record if one doesn't exist yet.
+    Creates a bare unverified record if the email is new.
 
     Rate-limiting:
-        - Raises HTTP 429 if the previous OTP was issued less than
-          OTP_RESEND_COOLDOWN seconds ago (prevents email flooding).
+        Raises HTTP 429 if a valid OTP was issued in the last OTP_RESEND_COOLDOWN seconds.
     """
+    now  = datetime.now(timezone.utc)
     user = await get_user_by_email(db, email)
 
     if user and user.otp_expires_at:
-        # ── Resend cooldown ───────────────────────────────────────────────
-        # otp_expires_at is set to now+10min when issued.
-        # The OTP is "fresh" if (expires_at - now) > (TTL - cooldown).
-        # e.g. expires in 9m50s → issued < 10s ago → block resend.
-        now = datetime.now(timezone.utc)
-        expires_aware = (
-            user.otp_expires_at
-            if user.otp_expires_at.tzinfo is not None
-            else user.otp_expires_at.replace(tzinfo=timezone.utc)
-        )
-        seconds_remaining = (expires_aware - now).total_seconds()
+        expires_utc       = _to_utc(user.otp_expires_at)
+        seconds_remaining = (expires_utc - now).total_seconds()
         cooldown_threshold = (OTP_TTL_MINUTES * 60) - OTP_RESEND_COOLDOWN
 
         if seconds_remaining > cooldown_threshold:
+            wait = int(OTP_RESEND_COOLDOWN - ((OTP_TTL_MINUTES * 60) - seconds_remaining))
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Please wait {OTP_RESEND_COOLDOWN} seconds before requesting a new OTP.",
+                detail=f"Please wait {max(wait, 1)} second(s) before requesting a new OTP.",
             )
 
     if not user:
@@ -91,21 +96,27 @@ async def upsert_otp(db: AsyncSession, email: str, hashed_otp: str) -> None:
         await db.flush()
 
     user.hashed_otp     = hashed_otp
-    user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_TTL_MINUTES)
-    user.otp_attempts   = 0   # reset attempt counter on new OTP
+    user.otp_expires_at = now + timedelta(minutes=OTP_TTL_MINUTES)
+    user.otp_attempts   = 0
+    user.updated_at     = now
     await db.flush()
 
 
 async def verify_and_clear_otp(
-    db          : AsyncSession,
-    email       : str,
-    plain_otp   : str,
-    display_name: str | None,
+    db            : AsyncSession,
+    email         : str,
+    plain_otp     : str,
+    display_name  : str | None,
+    mobile_number : str | None,
 ) -> tuple[User, bool]:
     """
-    Validate the OTP, clear it, mark email verified.
+    Validate OTP → clear it → mark email verified.
+
     Returns (user, is_new_user).
-    Raises HTTP 400 / 410 / 429 on bad/expired/too-many OTP.
+    Raises:
+        400 – no OTP on record / wrong code
+        410 – OTP expired
+        429 – too many wrong attempts
     """
     user = await get_user_by_email(db, email)
     if not user or not user.hashed_otp:
@@ -114,56 +125,51 @@ async def verify_and_clear_otp(
             detail="No OTP requested for this email",
         )
 
-    # ── Expiry check ──────────────────────────────────────────────────────
     now = datetime.now(timezone.utc)
-    # Fix: always work in UTC-aware datetimes, never use .replace() on an
-    # already-aware value.  Use .astimezone() so a naive stamp from DB is
-    # still handled safely.
-    expires_aware = (
-        user.otp_expires_at
-        if user.otp_expires_at.tzinfo is not None
-        else user.otp_expires_at.replace(tzinfo=timezone.utc)
-    )
-    if expires_aware < now:
+
+    # Expiry check — always compare UTC-aware datetimes
+    if _to_utc(user.otp_expires_at) < now:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="OTP has expired — request a new one",
         )
 
-    # ── Brute-force protection ────────────────────────────────────────────
+    # Brute-force check
     attempts = user.otp_attempts or 0
     if attempts >= OTP_MAX_ATTEMPTS:
-        # Clear OTP so user must request a fresh one
         user.hashed_otp     = None
         user.otp_expires_at = None
         user.otp_attempts   = 0
         await db.flush()
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many incorrect attempts. Please request a new OTP.",
+            detail="Too many incorrect attempts — please request a new OTP.",
         )
 
-    # ── Constant-time hash comparison ─────────────────────────────────────
-    if not verify_otp_hash(plain_otp, user.hashed_otp):
+    # Constant-time comparison
+    if not _verify_otp_hash(plain_otp, user.hashed_otp):
         user.otp_attempts = attempts + 1
         await db.flush()
         remaining = OTP_MAX_ATTEMPTS - user.otp_attempts
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid OTP. {remaining} attempt(s) remaining.",
+            detail=f"Invalid OTP — {remaining} attempt(s) remaining.",
         )
 
     is_new_user = not user.email_verified
 
-    # ── Clear OTP, mark verified ──────────────────────────────────────────
+    # Clear OTP, mark verified
     user.hashed_otp     = None
     user.otp_expires_at = None
     user.otp_attempts   = 0
     user.email_verified = True
     user.updated_at     = now
 
+    # Profile fields only set if provided and not already set
     if display_name and not user.display_name:
-        user.display_name = display_name
+        user.display_name = display_name.strip()
+    if mobile_number and not user.mobile_number:
+        user.mobile_number = mobile_number.strip()
 
     await db.flush()
     return user, is_new_user
@@ -180,31 +186,33 @@ async def get_or_create_google_user(
     display_name: str | None,
 ) -> tuple[User, bool]:
     """
-    Find user by google_sub first (most reliable).
-    Fall back to email lookup — if found, link Google sub to existing account.
+    Look up by google_sub first, then by email (merge existing OTP account),
+    else create brand new.
     Returns (user, is_new_user).
     """
-    # 1. Look up by Google's stable sub
+    now = datetime.now(timezone.utc)
+
+    # 1. Known Google user
     user = await get_user_by_google_sub(db, google_sub)
     if user:
-        # Keep display_name in sync if Google provides an update
         if display_name and user.display_name != display_name:
             user.display_name = display_name
+            user.updated_at   = now
             await db.flush()
         return user, False
 
-    # 2. Same email already exists — link Google sub to existing account
+    # 2. Email already registered via OTP — link Google sub
     user = await get_user_by_email(db, email)
     if user:
         user.google_sub     = google_sub
         user.email_verified = True
+        user.updated_at     = now
         if display_name and not user.display_name:
             user.display_name = display_name
-        user.updated_at = datetime.now(timezone.utc)
         await db.flush()
         return user, False
 
-    # 3. Brand new user
+    # 3. Brand new Google user
     user = User(
         email          = email,
         display_name   = display_name,
@@ -217,6 +225,51 @@ async def get_or_create_google_user(
     await db.flush()
     logger.warning(f"New Google user created: id={user.id} email={email}")
     return user, True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROFILE UPDATES
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def update_user_profile(
+    db           : AsyncSession,
+    user_id      : int,
+    display_name : str | None,
+    mobile_number: str | None,
+) -> User:
+    """Update display name and/or mobile number. Only changes non-None fields."""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if display_name is not None:
+        user.display_name = display_name.strip()
+    if mobile_number is not None:
+        user.mobile_number = mobile_number.strip()
+    user.updated_at = datetime.now(timezone.utc)
+
+    await db.flush()
+    return user
+
+
+async def update_user_budgets(
+    db            : AsyncSession,
+    user_id       : int,
+    daily_budget  : float | None,
+    monthly_budget: float | None,
+) -> User:
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if daily_budget is not None:
+        user.daily_budget = daily_budget
+    if monthly_budget is not None:
+        user.monthly_budget = monthly_budget
+    user.updated_at = datetime.now(timezone.utc)
+
+    await db.flush()
+    return user
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -248,66 +301,19 @@ async def is_token_blacklisted(db: AsyncSession, jti: str) -> bool:
         return result.scalars().first() is not None
     except Exception as e:
         logger.error(f"is_token_blacklisted error: {e}")
-        return True   # fail closed — treat DB errors as revoked
+        return True   # fail closed
 
 
 async def cleanup_expired_blacklist(db: AsyncSession) -> int:
-    """
-    Delete blacklist rows whose tokens have already expired.
-    Call this from a background task or a scheduled job — not on every request.
-    Returns the number of rows deleted.
-    """
+    """Delete rows whose tokens have already expired. Safe to call any time."""
     try:
-        now = datetime.now(timezone.utc)
         result = await db.execute(
-            delete(BlacklistedToken).where(BlacklistedToken.expires_at < now)
+            delete(BlacklistedToken).where(
+                BlacklistedToken.expires_at < datetime.now(timezone.utc)
+            )
         )
         await db.flush()
-        deleted = result.rowcount
-        logger.warning(f"Blacklist cleanup: removed {deleted} expired token(s)")
-        return deleted
+        return result.rowcount
     except Exception as e:
         logger.error(f"cleanup_expired_blacklist error: {e}")
         return 0
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PROFILE UPDATES
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def update_user_budgets(
-    db             : AsyncSession,
-    user_id        : int,
-    daily_budget   : float | None,
-    monthly_budget : float | None,
-) -> User:
-    """Update a user's daily/monthly budget targets."""
-    user = await get_user_by_id(db, user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    if daily_budget is not None:
-        user.daily_budget = daily_budget
-    if monthly_budget is not None:
-        user.monthly_budget = monthly_budget
-    user.updated_at = datetime.now(timezone.utc)
-
-    await db.flush()
-    return user
-
-
-async def update_display_name(
-    db          : AsyncSession,
-    user_id     : int,
-    display_name: str,
-) -> User:
-    """Update a user's display name."""
-    user = await get_user_by_id(db, user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    user.display_name = display_name.strip()
-    user.updated_at   = datetime.now(timezone.utc)
-
-    await db.flush()
-    return user
