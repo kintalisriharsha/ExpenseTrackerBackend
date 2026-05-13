@@ -1,26 +1,47 @@
-# Environment
+# ── Environment & Secrets ─────────────────────────────────────────────────────
 .env
 *.env
+.env.*
+!.env.example          # keep the example template
 
-# Firebase service account — NEVER commit this
+# Firebase / Google service accounts
 serviceAccountKey.json
 *serviceAccount*.json
 firebase-adminsdk*.json
+google-credentials*.json
 
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyd
+.Python
 .venv/
 venv/
 env/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Alembic
-alembic.ini
+# ── Alembic ───────────────────────────────────────────────────────────────────
+alembic.ini        # contains DB URL — keep locally only
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.iml
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
 
-.gitignore
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Dev utilities (should never ship) ────────────────────────────────────────
+secretKey.py
