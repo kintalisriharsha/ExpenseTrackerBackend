@@ -11,7 +11,7 @@ class SendOtpRequest(BaseModel):
 
 class VerifyOtpRequest(BaseModel):
     email:        EmailStr
-    otp:          str   = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+    otp:          str  = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
     display_name: Optional[str] = Field(None, max_length=255)
 
 
@@ -25,6 +25,15 @@ class RefreshTokenRequest(BaseModel):
 
 class LogoutRequest(BaseModel):
     refresh_token: str
+
+
+class UpdateProfileRequest(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=255)
+
+
+class UpdateBudgetRequest(BaseModel):
+    daily_budget:   Optional[float] = Field(None, ge=0)
+    monthly_budget: Optional[float] = Field(None, ge=0)
 
 
 # ── Responses ──────────────────────────────────────────────────────────────────
@@ -61,3 +70,7 @@ class RefreshResponse(BaseModel):
 
 class LogoutResponse(BaseModel):
     detail: str = "Successfully logged out"
+
+
+class MessageResponse(BaseModel):
+    detail: str
