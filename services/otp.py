@@ -1,6 +1,15 @@
-import random
-import string
+"""
+services/otp.py
+───────────────
+OTP generation, hashing, and email delivery.
+
+generate_otp / hash_otp / verify_otp_hash are thin wrappers that delegate
+to auth.auth so there is a single source of truth.  Email sending lives here.
+"""
+
 import hashlib
+import secrets
+import string
 import aiosmtplib
 import os
 import logging
@@ -21,7 +30,12 @@ FROM_NAME     = os.getenv("FROM_NAME", "Expense Tracker")
 # ── OTP helpers ────────────────────────────────────────────────────────────────
 
 def generate_otp(length: int = 6) -> str:
-    return "".join(random.choices(string.digits, k=length))
+    """
+    Cryptographically secure OTP.
+    Uses secrets.choice — NOT random.choices — so the output is
+    unpredictable even if the attacker knows the current timestamp.
+    """
+    return "".join(secrets.choice(string.digits) for _ in range(length))
 
 
 def hash_otp(otp: str) -> str:
@@ -29,7 +43,11 @@ def hash_otp(otp: str) -> str:
 
 
 def verify_otp_hash(plain_otp: str, stored_hash: str) -> bool:
-    return hash_otp(plain_otp) == stored_hash
+    """
+    Constant-time comparison via secrets.compare_digest.
+    Prevents timing-based side-channel attacks.
+    """
+    return secrets.compare_digest(hash_otp(plain_otp), stored_hash)
 
 
 # ── HTML template ──────────────────────────────────────────────────────────────
@@ -150,11 +168,11 @@ async def send_otp_email(to_email: str, otp: str) -> None:
     try:
         await aiosmtplib.send(
             msg,
-            hostname=SMTP_HOST,
-            port=SMTP_PORT,
-            username=SMTP_USER,
-            password=SMTP_PASSWORD,
-            start_tls=True,
+            hostname  = SMTP_HOST,
+            port      = SMTP_PORT,
+            username  = SMTP_USER,
+            password  = SMTP_PASSWORD,
+            start_tls = True,
         )
         logger.warning(f"OTP email sent to {to_email}")
     except Exception as e:
