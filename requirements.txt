@@ -1,6 +1,8 @@
 uvicorn
 fastapi
-sqlalchemy[asyncio]
+sqlalchemy
+pydantic
+python-dotenv
 asyncpg
 bcrypt
 python-jose[cryptography]
@@ -8,5 +10,5 @@ passlib[bcrypt]
 alembic
 pydantic[email]
 google-auth
+requests
 aiosmtplib
-python-dotenv
