@@ -1,0 +1,8 @@
+.env
+_env
+__pycache__/
+*.pyc
+.venv/
+venv/
+.git/
+secretKey.py
