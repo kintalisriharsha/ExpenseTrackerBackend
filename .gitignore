@@ -4,11 +4,6 @@
 .env.*
 !.env.example          # keep the example template
 
-# Firebase / Google service accounts
-serviceAccountKey.json
-*serviceAccount*.json
-firebase-adminsdk*.json
-google-credentials*.json
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
@@ -45,3 +40,4 @@ logs/
 
 # ── Dev utilities (should never ship) ────────────────────────────────────────
 secretKey.py
+.dockerignore
