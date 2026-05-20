@@ -27,6 +27,35 @@ def _verify_otp_hash(plain: str, stored_hash: str) -> bool:
     return secrets.compare_digest(candidate, stored_hash)
 
 
+async def _init_default_settings(db: AsyncSession, user_id: int) -> None:
+    """
+    Create a Settings row with default values for a newly registered user.
+    Calls init_budget from setting_crud directly — same path the route uses,
+    so all seeding logic (current month, zero values) lives in one place.
+    Imported locally to avoid a circular import between auth_crud ↔ setting_crud.
+    """
+    from crud.setting_crud import init_budget
+    from schemas.setting_schema import BudgetInit
+
+    payload = BudgetInit(
+        monthly_budget       = 0.0,
+        daily_limit          = 0.0,
+        notification_enabled = False,
+        is_dark_mode         = False,
+        apply_to_all_months  = False,   # only seed the current month
+    )
+
+    try:
+        await init_budget(db, user_id, payload)
+        logger.warning(f"Default settings created for user_id={user_id}")
+    except HTTPException as e:
+        # 409 = settings already exist — safe to swallow, never block signup
+        if e.status_code == status.HTTP_409_CONFLICT:
+            logger.warning(f"Settings already exist for user_id={user_id} — skipping init")
+        else:
+            raise
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # USER LOOKUPS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -69,6 +98,9 @@ async def upsert_otp(db: AsyncSession, email: str, hashed_otp: str) -> None:
 
     Rate-limiting:
         Raises HTTP 429 if a valid OTP was issued in the last OTP_RESEND_COOLDOWN seconds.
+
+    Note: Settings are NOT initialised here — the user hasn't verified ownership
+    of the email yet. Init happens in verify_and_clear_otp on first success.
     """
     now  = datetime.now(timezone.utc)
     user = await get_user_by_email(db, email)
@@ -117,6 +149,9 @@ async def verify_and_clear_otp(
         400 – no OTP on record / wrong code
         410 – OTP expired
         429 – too many wrong attempts
+
+    On first successful verify (is_new_user=True), default Settings are
+    initialised automatically so the app never needs to call /budget/init.
     """
     user = await get_user_by_email(db, email)
     if not user or not user.hashed_otp:
@@ -172,6 +207,11 @@ async def verify_and_clear_otp(
         user.mobile_number = mobile_number.strip()
 
     await db.flush()
+
+    # Initialise default settings for brand-new users only
+    if is_new_user:
+        await _init_default_settings(db, user.id)
+
     return user, is_new_user
 
 
@@ -189,10 +229,13 @@ async def get_or_create_google_user(
     Look up by google_sub first, then by email (merge existing OTP account),
     else create brand new.
     Returns (user, is_new_user).
+
+    On brand-new Google sign-in (is_new_user=True), default Settings are
+    initialised automatically.
     """
     now = datetime.now(timezone.utc)
 
-    # 1. Known Google user
+    # 1. Known Google user — returning, no init needed
     user = await get_user_by_google_sub(db, google_sub)
     if user:
         if display_name and user.display_name != display_name:
@@ -201,7 +244,7 @@ async def get_or_create_google_user(
             await db.flush()
         return user, False
 
-    # 2. Email already registered via OTP — link Google sub
+    # 2. Email already registered via OTP — link Google sub, no init needed
     user = await get_user_by_email(db, email)
     if user:
         user.google_sub     = google_sub
@@ -212,7 +255,7 @@ async def get_or_create_google_user(
         await db.flush()
         return user, False
 
-    # 3. Brand new Google user
+    # 3. Brand new Google user — create then init default settings
     user = User(
         email          = email,
         display_name   = display_name,
@@ -224,6 +267,9 @@ async def get_or_create_google_user(
     db.add(user)
     await db.flush()
     logger.warning(f"New Google user created: id={user.id} email={email}")
+
+    await _init_default_settings(db, user.id)
+
     return user, True
 
 

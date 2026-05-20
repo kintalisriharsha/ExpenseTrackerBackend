@@ -10,5 +10,6 @@ passlib[bcrypt]
 alembic
 pydantic[email]
 google-auth
+google-auth-oauthlib
 requests
 aiosmtplib

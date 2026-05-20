@@ -1,14 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 import logging
-import asyncio
 import uvicorn
 import os
-
 from api_routes.auth_route import router as auth_router
+from api_routes.setting_route import router as setting_router
 from db import create_tables, warmup_connection_pool, close_db, check_db_health
+from api_routes.expense_route import router as expense_router
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -18,50 +19,20 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-
-# ── Background task: clean up expired blacklist rows ──────────────────────────
-
-async def _cleanup_loop(interval_seconds: int = 3600) -> None:
-    """
-    Runs every `interval_seconds` (default 1 hour).
-    Deletes blacklisted token rows whose expiry has passed.
-    These can never be used again anyway, so it's safe to purge them.
-    """
-    from db import AsyncSessionLocal
-    from crud.auth_crud import cleanup_expired_blacklist
-
-    while True:
-        await asyncio.sleep(interval_seconds)
-        async with AsyncSessionLocal() as db:
-            try:
-                await cleanup_expired_blacklist(db)
-                await db.commit()
-            except Exception as e:
-                logger.error(f"Blacklist cleanup task failed: {e}")
-
-
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ────────────────────────────────────────────────────────
     logger.warning("Starting Expense Tracker API...")
-    await create_tables()
-    await warmup_connection_pool()
-
-    # Start background cleanup task
-    cleanup_task = asyncio.create_task(_cleanup_loop())
+    await create_tables()           # create DB tables if not exist
+    await warmup_connection_pool()  # warm up asyncpg connection pool
     logger.warning("Startup complete")
 
-    yield
+    yield   # app is running
 
     # ── Shutdown ───────────────────────────────────────────────────────
     logger.warning("Shutting down...")
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
     await close_db()
     logger.warning("Shutdown complete")
 
@@ -69,69 +40,55 @@ async def lifespan(app: FastAPI):
 # ── App ────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title       = "Expense Tracker API",
-    description = "Backend API for the Expense Tracker Android app",
-    version     = "1.0.0",
-    lifespan    = lifespan,
-    # redirect_slashes=False is intentional:
-    # keeps URLs canonical and avoids surprises with some Retrofit configs.
-    redirect_slashes = False,
+    title="Expense Tracker API",
+    description="Backend API for the Expense Tracker Android app",
+    version="1.0.0",
+    lifespan=lifespan,
+    redirect_slashes=False,
+    docs_url=None,      # blocks /docs
+    redoc_url=None,     # blocks /redoc
+    openapi_url=None,   # blocks /openapi.json
 )
-
 
 # ── Middleware ─────────────────────────────────────────────────────────────────
 
-# CORS is not needed by the Android app itself (Retrofit is not a browser).
-# Uncomment when you add a web dashboard.  Never use allow_origins=["*"] in
-# production — list your actual frontend domain(s) explicitly.
-#
+# CORS — commented out (Android Retrofit does not need CORS)
+# Uncomment if you add a web dashboard later
 # app.add_middleware(
 #     CORSMiddleware,
-#     allow_origins     = ["https://your-dashboard.example.com"],
-#     allow_methods     = ["GET", "POST", "PUT", "PATCH", "DELETE"],
-#     allow_headers     = ["Authorization", "Content-Type"],
-#     allow_credentials = True,
+#     allow_origins=["*"],
+#     allow_methods=["*"],
+#     allow_headers=["*"],
 # )
 
-# HTTPS redirect — uncomment on production (Render / Railway handle TLS for you
-# so this is usually not needed there; only enable if you manage your own nginx).
-# from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+# HTTPS redirect — uncomment on production only
 # app.add_middleware(HTTPSRedirectMiddleware)
-
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 
 app.include_router(auth_router)
 
-# Uncomment as you build each feature:
-# from routers.expense_router import router as expense_router
-# from routers.budget_router  import router as budget_router
-# from routers.goals_router   import router as goals_router
-# from routers.profile_router import router as profile_router
-# app.include_router(expense_router)
-# app.include_router(budget_router)
-# app.include_router(goals_router)
-# app.include_router(profile_router)
+app.include_router(setting_router)
 
+app.include_router(expense_router)
 
 # ── Root ───────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
+    """Root endpoint"""
     return {
         "message": "Expense Tracker API",
         "version": "1.0.0",
-        "docs":    "/docs",
     }
-
 
 # ── Health check ───────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
     """
-    Returns DB connection status and pool stats.
-    Used by Render / Railway for liveness checks.
+    Health check — returns DB connection status and pool stats.
+    Used by Render / Railway to verify the app is alive.
     """
     db_health = await check_db_health()
     return {
@@ -145,8 +102,8 @@ async def health():
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
-        host      = "0.0.0.0",
-        port      = 8000,
-        reload    = True,
-        log_level = "info",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info",
     )

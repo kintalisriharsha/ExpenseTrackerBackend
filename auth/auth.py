@@ -102,23 +102,3 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         "jti":            payload.get("jti"),
     }
 
-
-# ── OTP helpers ────────────────────────────────────────────────────────────────
-# Kept here so auth.py is self-contained for token + OTP primitives.
-# The email-sending logic lives in services/otp.py.
-
-import hashlib
-
-def generate_otp(length: int = 6) -> str:
-    """Cryptographically secure OTP using secrets module (NOT random)."""
-    import string
-    return "".join(secrets.choice(string.digits) for _ in range(length))
-
-
-def hash_otp(otp: str) -> str:
-    return hashlib.sha256(otp.encode()).hexdigest()
-
-
-def verify_otp_hash(plain_otp: str, stored_hash: str) -> bool:
-    """Constant-time comparison to prevent timing attacks."""
-    return secrets.compare_digest(hash_otp(plain_otp), stored_hash)

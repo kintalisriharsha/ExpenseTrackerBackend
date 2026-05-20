@@ -39,6 +39,8 @@ if config.config_file_name is not None:
 # ── Import your models so autogenerate can detect them ────────────────────────
 from db import Base                                  # noqa: E402
 from models.user_model import User, BlacklistedToken # noqa: E402
+from models.setting_model import Settings
+from models.expense_model import Expense
 
 target_metadata = Base.metadata
 

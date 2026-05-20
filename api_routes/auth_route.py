@@ -10,7 +10,8 @@ from auth.auth import (
     decode_token,
     get_current_user,
 )
-from services.otp import generate_otp, hash_otp, send_otp_email
+from services.otp import generate_otp, hash_otp_async   # ← async hash
+from services.otpEmail  import send_otp_email                 # ← email sender
 from auth.Google import verify_google_token
 from crud.auth_crud import (
     upsert_otp,
@@ -62,7 +63,7 @@ async def send_otp(
     Creates a bare user row if the email has never been seen before.
     """
     otp    = generate_otp()
-    hashed = hash_otp(otp)
+    hashed = await hash_otp_async(otp)   # ← non-blocking; offloaded to thread pool
 
     await upsert_otp(db, payload.email, hashed)
 
@@ -100,10 +101,6 @@ async def verify_otp(
     Response fields:
         is_new_user = true  → first ever login → Android navigates to CreateAccount screen
         is_new_user = false → returning user   → Android navigates to Home screen
-
-    display_name and mobile_number are optional here — they're sent from the
-    CreateAccount screen when the user completes their profile after first login.
-    They are only written if the user row doesn't already have them.
     """
     user, is_new_user = await verify_and_clear_otp(
         db,
@@ -221,7 +218,7 @@ async def refresh_token(
     return RefreshResponse(access_token=create_access_token(user))
 
 
-# ── POST /auth/logout  (fixed: was DELETE) ────────────────────────────────────
+# ── POST /auth/logout ─────────────────────────────────────────────────────────
 
 @router.post(
     "/logout",
@@ -288,10 +285,6 @@ async def update_profile(
     db          : AsyncSession = Depends(get_db),
     current_user: dict         = Depends(get_current_user),
 ):
-    """
-    Called from the CreateAccount screen (new users) and the Profile edit screen.
-    Only the fields that are provided (non-null) are updated.
-    """
     user = await update_user_profile(
         db,
         current_user["id"],
@@ -321,3 +314,4 @@ async def update_budget(
         payload.monthly_budget,
     )
     return UserResponse.model_validate(user)
+
