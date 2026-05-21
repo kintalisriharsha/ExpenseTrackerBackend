@@ -41,6 +41,7 @@ from db import Base                                  # noqa: E402
 from models.user_model import User, BlacklistedToken # noqa: E402
 from models.setting_model import Settings
 from models.expense_model import Expense
+from models.goal_model import Goal
 
 target_metadata = Base.metadata
 

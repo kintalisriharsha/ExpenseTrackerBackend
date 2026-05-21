@@ -5,8 +5,8 @@ All endpoints for the expense feature.
 
 Endpoints
 ─────────
-POST   /expenses                  → add a new expense          (AddExpense.kt)
-GET    /expenses                  → get all expenses (limit 50)(HistoryScreen)
+POST   /expenses/add_expense                  → add a new expense          (AddExpense.kt)
+GET    /expenses/get_all_expenses                  → get all expenses (limit 50)(HistoryScreen)
 GET    /expenses/today            → today's expenses only      (HomeScreen)
 GET    /expenses/search           → search + category filter   (SearchDialog)
 PATCH  /expenses/{expense_id}     → edit an expense            (DetailScreen edit icon)
@@ -41,7 +41,7 @@ router = APIRouter(prefix="/expenses", tags=["expenses"])
 # ── Add expense ────────────────────────────────────────────────────────────────
 
 @router.post(
-    "",
+    "/add_expense",
     response_model=ExpenseResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Add a new expense",
@@ -95,7 +95,7 @@ async def add_expense_route(
 # ── Get all expenses (limit 50) ────────────────────────────────────────────────
 
 @router.get(
-    "",
+    "/get_all_expenses",
     response_model=ExpenseListResponse,
     summary="Get all expenses — newest first, default limit 50",
     description="""

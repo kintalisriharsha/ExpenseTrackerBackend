@@ -94,7 +94,14 @@ class User(Base):
         "Expense",
         back_populates="user",
         cascade="all, delete-orphan",
-        passive_deletes=True,
+        passive_deletes=True
+    )
+
+    goals = relationship(
+        "Goal",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True
     )
 
     __table_args__ = (

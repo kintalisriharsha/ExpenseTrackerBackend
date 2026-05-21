@@ -35,7 +35,7 @@ from db import Base
 
 
 class Settings(Base):
-    __tablename__ = "user_budgets"
+    __tablename__ = "settings"
 
     # user_id is both the PK and the FK — one row per user, no surrogate key needed
     user_id = Column(
