@@ -321,22 +321,6 @@ async def carry_forward_route(
     )
 
 
-# ── Delete ─────────────────────────────────────────────────────────────────────
-
-@router.delete(
-    "",
-    status_code=status.HTTP_200_OK,
-    summary="Delete settings record",
-    description="Removes all settings data and resets User.monthly_budget and User.daily_budget to 0.",
-)
-async def delete_settings_route(
-    db           : AsyncSession = Depends(get_db),
-    current_user : dict         = Depends(get_current_user),
-):
-    await delete_settings(db, current_user["id"])
-    return {"message": "Settings deleted and user profile reset to zero"}
-
-
 # ── Private helper ─────────────────────────────────────────────────────────────
 
 def _resolve_current() -> tuple[str, str]:
