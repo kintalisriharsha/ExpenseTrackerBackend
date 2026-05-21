@@ -34,8 +34,7 @@ from crud.setting_crud import (
     get_settings_or_404,
     get_current_month,
     get_year,
-    carry_forward_month,
-    delete_settings,
+    carry_forward_month
 )
 
 from datetime import date
