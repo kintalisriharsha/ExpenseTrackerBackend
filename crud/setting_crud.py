@@ -1,7 +1,7 @@
 """
-budget_crud.py
-──────────────
-All database operations for the budget feature.
+setting_crud.py
+───────────────
+All database operations for the settings feature.
 
 JSON structure operated on:
 {
@@ -41,8 +41,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.setting_model import Settings
 from models.user_model import User
 from schemas.setting_schema import (
-    BudgetInit,
-    BudgetUpdate,
+    SettingsInit,
+    SettingsUpdate,
     MONTHS,
     _empty_month_entry,
 )
@@ -102,31 +102,31 @@ async def _sync_to_user(
 # FETCH HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def get_budget(db: AsyncSession, user_id: int) -> Optional[Settings]:
+async def get_settings(db: AsyncSession, user_id: int) -> Optional[Settings]:
     result = await db.execute(
         select(Settings).where(Settings.user_id == user_id)
     )
     return result.scalars().first()
 
 
-async def get_budget_or_404(db: AsyncSession, user_id: int) -> Settings:
-    budget = await get_budget(db, user_id)
-    if not budget:
+async def get_settings_or_404(db: AsyncSession, user_id: int) -> Settings:
+    settings = await get_settings(db, user_id)
+    if not settings:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Budget not found. Call POST /budget/init first.",
+            detail="Settings not found. Call POST /setting/init first.",
         )
-    return budget
+    return settings
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INIT  (called once at onboarding / first Settings save)
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def init_budget(
+async def init_settings(
     db      : AsyncSession,
     user_id : int,
-    payload : BudgetInit,
+    payload : SettingsInit,
 ) -> tuple[Settings, dict]:
     """
     Create a Settings row for the user.
@@ -134,13 +134,13 @@ async def init_budget(
 
     Persists notification_enabled and is_dark_mode from the payload.
 
-    Returns (budget, current_month_entry).
+    Returns (settings, current_month_entry).
     """
-    existing = await get_budget(db, user_id)
+    existing = await get_settings(db, user_id)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Budget already initialised. Use PATCH /budget to update.",
+            detail="Settings already initialised. Use PATCH /setting to update.",
         )
 
     year_str, month_str = _today_year_month()
@@ -155,37 +155,37 @@ async def init_budget(
     else:
         budget_data = {year_str: {month_str: entry.copy()}}
 
-    budget = Settings(
+    settings = Settings(
         user_id              = user_id,
         budget_data          = budget_data,
         notification_enabled = payload.notification_enabled,
         is_dark_mode         = payload.is_dark_mode,
     )
-    db.add(budget)
+    db.add(settings)
     await db.flush()
 
     await _sync_to_user(db, user_id, entry)
-    logger.info(f"Budget initialised for user_id={user_id}")
-    return budget, entry
+    logger.info(f"Settings initialised for user_id={user_id}")
+    return settings, entry
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UPDATE  (called every time user taps Save in Settings)
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def update_budget(
+async def update_settings(
     db      : AsyncSession,
     user_id : int,
-    payload : BudgetUpdate,
+    payload : SettingsUpdate,
 ) -> tuple[Settings, str, str, dict]:
     """
     Save the monthly_budget and daily_limit for a specific month,
     and always persist notification_enabled and is_dark_mode to the row.
     Defaults to the current year/month if not provided in payload.
 
-    Returns (budget, year_str, month_str, entry).
+    Returns (settings, year_str, month_str, entry).
     """
-    budget = await get_budget_or_404(db, user_id)
+    settings = await get_settings_or_404(db, user_id)
 
     # Resolve target year/month
     today = date.today()
@@ -198,13 +198,13 @@ async def update_budget(
     }
 
     # Deep copy → mutate → reassign (required for SQLAlchemy JSON detection)
-    new_data = copy.deepcopy(budget.budget_data)
+    new_data = copy.deepcopy(settings.budget_data)
     new_data.setdefault(year_str, {})[month_str] = entry
-    budget.budget_data = new_data
+    settings.budget_data = new_data
 
     # Preferences are sticky columns — always update them regardless of month
-    budget.notification_enabled = payload.notification_enabled
-    budget.is_dark_mode         = payload.is_dark_mode
+    settings.notification_enabled = payload.notification_enabled
+    settings.is_dark_mode         = payload.is_dark_mode
 
     await db.flush()
 
@@ -214,12 +214,12 @@ async def update_budget(
         await _sync_to_user(db, user_id, entry)
 
     logger.info(
-        f"Budget updated for user_id={user_id} "
+        f"Settings updated for user_id={user_id} "
         f"{month_str}/{year_str}: {entry} | "
         f"notification_enabled={payload.notification_enabled} "
         f"is_dark_mode={payload.is_dark_mode}"
     )
-    return budget, year_str, month_str, entry
+    return settings, year_str, month_str, entry
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -231,20 +231,20 @@ async def get_current_month(
     user_id : int,
 ) -> tuple[str, str, dict]:
     """
-    Returns the current month's budget entry.
+    Returns the current month's settings entry.
     If it doesn't exist yet, carry-forward is triggered automatically
     so the Settings screen always gets a sensible value.
 
     Returns (year_str, month_str, entry).
     """
-    budget = await get_budget_or_404(db, user_id)
+    settings = await get_settings_or_404(db, user_id)
     year_str, month_str = _today_year_month()
 
-    entry = _get_month_entry(budget.budget_data, year_str, month_str)
+    entry = _get_month_entry(settings.budget_data, year_str, month_str)
 
     # Auto carry-forward if current month has no data
     if entry == _empty_month_entry():
-        _, _, entry = await _carry_forward(db, user_id, budget, overwrite=False)
+        _, _, entry = await _carry_forward(db, user_id, settings, overwrite=False)
 
     return year_str, month_str, entry
 
@@ -255,9 +255,9 @@ async def get_year(
     year    : int,
 ) -> dict:
     """All months for a given year. Missing months return zeros."""
-    budget   = await get_budget_or_404(db, user_id)
-    year_str = str(year)
-    year_data = budget.budget_data.get(year_str, {})
+    settings = await get_settings_or_404(db, user_id)
+    year_str  = str(year)
+    year_data = settings.budget_data.get(year_str, {})
 
     return {
         m: year_data.get(m, _empty_month_entry())
@@ -272,7 +272,7 @@ async def get_year(
 async def _carry_forward(
     db        : AsyncSession,
     user_id   : int,
-    budget    : Settings,
+    settings  : Settings,
     overwrite : bool,
 ) -> tuple[str, dict, dict]:
     """
@@ -293,7 +293,7 @@ async def _carry_forward(
     prev_month_str = MONTHS[prev_month_int - 1]
 
     current_entry = _get_month_entry(
-        budget.budget_data, cur_year_str, cur_month_str
+        settings.budget_data, cur_year_str, cur_month_str
     )
     already_set = current_entry != _empty_month_entry()
 
@@ -301,12 +301,12 @@ async def _carry_forward(
         return "already_set", current_entry, current_entry
 
     source_entry = _get_month_entry(
-        budget.budget_data, prev_year_str, prev_month_str
+        settings.budget_data, prev_year_str, prev_month_str
     )
 
-    new_data = copy.deepcopy(budget.budget_data)
+    new_data = copy.deepcopy(settings.budget_data)
     new_data.setdefault(cur_year_str, {})[cur_month_str] = source_entry.copy()
-    budget.budget_data = new_data
+    settings.budget_data = new_data
     await db.flush()
 
     await _sync_to_user(db, user_id, source_entry)
@@ -331,7 +331,7 @@ async def carry_forward_month(
 
     Returns a result dict for the route to build its response from.
     """
-    budget = await get_budget_or_404(db, user_id)
+    settings = await get_settings_or_404(db, user_id)
 
     today         = date.today()
     cur_year_str  = str(today.year)
@@ -342,11 +342,11 @@ async def carry_forward_month(
     prev_month_str = MONTHS[prev_month_int - 1]
 
     action, source_entry, had_before = await _carry_forward(
-        db, user_id, budget, overwrite
+        db, user_id, settings, overwrite
     )
 
-    budget = await get_budget_or_404(db, user_id)   # refresh after flush
-    values_now = _get_month_entry(budget.budget_data, cur_year_str, cur_month_str)
+    settings   = await get_settings_or_404(db, user_id)   # refresh after flush
+    values_now = _get_month_entry(settings.budget_data, cur_year_str, cur_month_str)
 
     return {
         "action"        : action,
@@ -363,9 +363,9 @@ async def carry_forward_month(
 # DELETE
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def delete_budget(db: AsyncSession, user_id: int) -> None:
-    """Hard-delete the budget row and reset User budget fields to zero."""
-    budget = await get_budget_or_404(db, user_id)
-    await db.delete(budget)
+async def delete_settings(db: AsyncSession, user_id: int) -> None:
+    """Hard-delete the settings row and reset User budget fields to zero."""
+    settings = await get_settings_or_404(db, user_id)
+    await db.delete(settings)
     await _sync_to_user(db, user_id, _empty_month_entry())
-    logger.info(f"Budget deleted for user_id={user_id}")
+    logger.info(f"Settings deleted for user_id={user_id}")
