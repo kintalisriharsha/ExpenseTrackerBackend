@@ -358,14 +358,3 @@ async def carry_forward_month(
         "user_daily_limit_synced"   : values_now.get("daily_limit")    if action != "already_set" else None,
     }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DELETE
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def delete_settings(db: AsyncSession, user_id: int) -> None:
-    """Hard-delete the settings row and reset User budget fields to zero."""
-    settings = await get_settings_or_404(db, user_id)
-    await db.delete(settings)
-    await _sync_to_user(db, user_id, _empty_month_entry())
-    logger.info(f"Settings deleted for user_id={user_id}")
