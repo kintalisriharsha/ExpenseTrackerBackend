@@ -10,6 +10,8 @@ from api_routes.auth_route import router as auth_router
 from api_routes.setting_route import router as setting_router
 from db import create_tables, warmup_connection_pool, close_db, check_db_health
 from api_routes.expense_route import router as expense_router
+from api_routes.goal_route import router as goal_router
+from api_routes.budget_route import router as budget_router
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -72,6 +74,9 @@ app.include_router(setting_router)
 
 app.include_router(expense_router)
 
+app.include_router(goal_router)
+
+app.include_router(budget_router)
 # ── Root ───────────────────────────────────────────────────────────────────────
 
 @app.get("/")

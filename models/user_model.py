@@ -104,6 +104,21 @@ class User(Base):
         passive_deletes=True
     )
 
+    budget_active = relationship(
+        "BudgetActive",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+ 
+    budget_history = relationship(
+        "BudgetHistory",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     __table_args__ = (
         Index("idx_users_email",      "email"),
         Index("idx_users_google_sub", "google_sub"),
