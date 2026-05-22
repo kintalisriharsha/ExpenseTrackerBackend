@@ -1,16 +1,16 @@
 """
-budget_route.py
-───────────────
-All endpoints for the budget feature.
+setting_route.py
+────────────────
+All endpoints for the settings feature.
 
 Endpoints
 ─────────
-POST   /budget/init              → first time setup (onboarding)
-GET    /budget/current           → load Settings screen with current month's values
-GET    /budget/year/{year}       → all 12 months for a given year
-PATCH  /budget                   → save from Settings screen
-POST   /budget/carry-forward     → Android WorkManager: new month started
-DELETE /budget                   → delete budget record
+POST   /setting/init              → first time setup (onboarding)
+GET    /setting/current           → load Settings screen with current month's values
+GET    /setting/year/{year}       → all 12 months for a given year
+PATCH  /setting                   → save from Settings screen
+POST   /setting/carry-forward     → Android WorkManager: new month started
+DELETE /setting                   → delete settings record
 """
 
 from fastapi import APIRouter, Depends, status
@@ -19,30 +19,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db import get_db
 from auth.auth import get_current_user
 from schemas.setting_schema import (
-    BudgetInit,
-    BudgetUpdate,
-    BudgetResponse,
+    SettingsInit,
+    SettingsUpdate,
     SettingsResponse,
-    YearBudgetResponse,
+    YearSettingsResponse,
     CarryForwardRequest,
     CarryForwardResponse,
     MonthEntry,
     MONTHS,
 )
 from crud.setting_crud import (
-    init_budget,
-    update_budget,
-    get_budget_or_404,
+    init_settings,
+    update_settings,
+    get_settings_or_404,
     get_current_month,
     get_year,
-    carry_forward_month,
-    delete_budget,
+    carry_forward_month
 )
 
 from datetime import date
 from schemas.setting_schema import MONTHS
 
-router = APIRouter(prefix="/budget", tags=["budget"])
+router = APIRouter(prefix="/setting", tags=["setting"])
 
 
 # ── Init ───────────────────────────────────────────────────────────────────────
@@ -51,15 +49,15 @@ router = APIRouter(prefix="/budget", tags=["budget"])
     "/init",
     response_model=SettingsResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Initialise budget — call once at onboarding",
+    summary="Initialise settings — call once at onboarding",
     description="""
-Creates the budget record for the authenticated user.
+Creates the settings record for the authenticated user.
 
 - `apply_to_all_months: true` → seeds all 12 months of the current year
   with the same values. Good for first-time setup.
 - `apply_to_all_months: false` (default) → only seeds the current month.
 
-Raises **409** if budget already exists.
+Raises **409** if settings already exists.
 
 Example:
 ```json
@@ -73,20 +71,20 @@ Example:
 ```
 """,
 )
-async def init_budget_route(
-    payload      : BudgetInit,
+async def init_settings_route(
+    payload      : SettingsInit,
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    budget, entry = await init_budget(db, current_user["id"], payload)
+    settings, entry = await init_settings(db, current_user["id"], payload)
     year_str, month_str = _resolve_current()
     return SettingsResponse(
         year                       = int(year_str),
         month                      = month_str,
         monthly_budget             = entry["monthly_budget"],
         daily_limit                = entry["daily_limit"],
-        notification_enabled       = budget.notification_enabled,
-        is_dark_mode               = budget.is_dark_mode,
+        notification_enabled       = settings.notification_enabled,
+        is_dark_mode               = settings.is_dark_mode,
         user_monthly_budget_synced = entry["monthly_budget"],
         user_daily_limit_synced    = entry["daily_limit"],
     )
@@ -97,7 +95,7 @@ async def init_budget_route(
 @router.get(
     "/current",
     response_model=SettingsResponse,
-    summary="Get current month's budget — used to load the Settings screen",
+    summary="Get current month's settings — used to load the Settings screen",
     description="""
 Returns the `monthly_budget`, `daily_limit`, `notification_enabled`, and
 `is_dark_mode` for the current month.
@@ -127,14 +125,14 @@ async def get_current_month_route(
     current_user : dict         = Depends(get_current_user),
 ):
     year_str, month_str, entry = await get_current_month(db, current_user["id"])
-    budget = await get_budget_or_404(db, current_user["id"])
+    settings = await get_settings_or_404(db, current_user["id"])
     return SettingsResponse(
         year                       = int(year_str),
         month                      = month_str,
         monthly_budget             = entry["monthly_budget"],
         daily_limit                = entry["daily_limit"],
-        notification_enabled       = budget.notification_enabled,
-        is_dark_mode               = budget.is_dark_mode,
+        notification_enabled       = settings.notification_enabled,
+        is_dark_mode               = settings.is_dark_mode,
         user_monthly_budget_synced = float(current_user.get("monthly_budget", 0.0)),
         user_daily_limit_synced    = float(current_user.get("daily_budget",   0.0)),
     )
@@ -142,13 +140,13 @@ async def get_current_month_route(
 
 @router.get(
     "/year/{year}",
-    response_model=YearBudgetResponse,
+    response_model=YearSettingsResponse,
     summary="Get all 12 months for a year",
     description="""
 Returns the `monthly_budget` and `daily_limit` for every month in the
 given year. Months with no data return `{ monthly_budget: 0.0, daily_limit: 0.0 }`.
 
-Useful for displaying a full-year budget overview screen.
+Useful for displaying a full-year settings overview screen.
 
 Example response:
 ```json
@@ -170,7 +168,7 @@ async def get_year_route(
     current_user : dict         = Depends(get_current_user),
 ):
     months_raw = await get_year(db, current_user["id"], year)
-    return YearBudgetResponse(
+    return YearSettingsResponse(
         year   = year,
         months = {
             m: MonthEntry(
@@ -187,12 +185,12 @@ async def get_year_route(
 @router.patch(
     "",
     response_model=SettingsResponse,
-    summary="Save budget from Settings screen",
+    summary="Save settings from Settings screen",
     description="""
 Called every time the user taps **Save All Settings**.
 
 - `notification_enabled` and `is_dark_mode` are always saved to the
-  `UserBudget` row regardless of which month is being updated.
+  `Settings` row regardless of which month is being updated.
 - If `year` and `month` are omitted → updates the **current** month.
 - If provided → updates that specific month (e.g. editing a past month).
 - Always syncs `User.monthly_budget` and `User.daily_budget` when the
@@ -221,12 +219,12 @@ Example — save a specific month:
 ```
 """,
 )
-async def update_budget_route(
-    payload      : BudgetUpdate,
+async def update_settings_route(
+    payload      : SettingsUpdate,
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    budget, year_str, month_str, entry = await update_budget(
+    settings, year_str, month_str, entry = await update_settings(
         db, current_user["id"], payload
     )
     return SettingsResponse(
@@ -234,8 +232,8 @@ async def update_budget_route(
         month                      = month_str,
         monthly_budget             = entry["monthly_budget"],
         daily_limit                = entry["daily_limit"],
-        notification_enabled       = budget.notification_enabled,
-        is_dark_mode               = budget.is_dark_mode,
+        notification_enabled       = settings.notification_enabled,
+        is_dark_mode               = settings.is_dark_mode,
         user_monthly_budget_synced = entry["monthly_budget"],
         user_daily_limit_synced    = entry["daily_limit"],
     )
@@ -246,7 +244,7 @@ async def update_budget_route(
 @router.post(
     "/carry-forward",
     response_model=CarryForwardResponse,
-    summary="Carry previous month's budget into the new month",
+    summary="Carry previous month's settings into the new month",
     description="""
 **Called by Android WorkManager at the start of every new month.**
 
@@ -320,22 +318,6 @@ async def carry_forward_route(
         user_monthly_budget_synced = result.get("user_monthly_budget_synced"),
         user_daily_limit_synced    = result.get("user_daily_limit_synced"),
     )
-
-
-# ── Delete ─────────────────────────────────────────────────────────────────────
-
-@router.delete(
-    "",
-    status_code=status.HTTP_200_OK,
-    summary="Delete budget record",
-    description="Removes all budget data and resets User.monthly_budget and User.daily_budget to 0.",
-)
-async def delete_budget_route(
-    db           : AsyncSession = Depends(get_db),
-    current_user : dict         = Depends(get_current_user),
-):
-    await delete_budget(db, current_user["id"])
-    return {"message": "Budget deleted and user profile reset to zero"}
 
 
 # ── Private helper ─────────────────────────────────────────────────────────────
