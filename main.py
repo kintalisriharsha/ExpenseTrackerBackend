@@ -12,6 +12,7 @@ from db import create_tables, warmup_connection_pool, close_db, check_db_health
 from api_routes.expense_route import router as expense_router
 from api_routes.goal_route import router as goal_router
 from api_routes.budget_route import router as budget_router
+from api_routes.home_route import router as home_router
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -67,6 +68,8 @@ app = FastAPI(
 # app.add_middleware(HTTPSRedirectMiddleware)
 
 # ── Routers ────────────────────────────────────────────────────────────────────
+
+app.include_router(home_router)
 
 app.include_router(auth_router)
 
