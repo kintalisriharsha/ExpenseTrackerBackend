@@ -7,7 +7,7 @@ Why one endpoint?
     HomeScreen renders three independent sections in a single scroll view:
         1. DailySummaryCard   → today's expenses + budget totals
         2. TodayExpensesSection → up to 3 most-recent today's expenses
-        3. SavingsBanner      → top active savings goal
+        3. SavingsBanner      → top active savings goal (closest to completion)
 
     A single GET /home call lets the Android app load the screen in one
     network round-trip instead of firing three parallel requests.
@@ -28,7 +28,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
-from sqlalchemy import cast, func, select
+from sqlalchemy import cast, case, func, select
 from sqlalchemy import Date as SADate
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -125,7 +125,7 @@ class HomeExpenseSummary(BaseModel):
 
 class HomeGoalSummary(BaseModel):
     """
-    Powers SavingsBanner — the top active (incomplete) savings goal.
+    Powers SavingsBanner — the active savings goal closest to completion.
 
     Returns null in HomeResponse if the user has no active goals.
 
@@ -238,8 +238,8 @@ async def _fetch_budget(db: AsyncSession, user_id: int) -> HomeBudgetSummary:
             week_end        = None,
         )
 
-    weekly  = float(active.weekly_budget)
-    spent   = float(active.total_spent)
+    weekly    = float(active.weekly_budget)
+    spent     = float(active.total_spent)
     remaining = round(weekly - spent, 2)
     exceeded  = (weekly > 0) and (spent > weekly)
 
@@ -295,17 +295,30 @@ async def _fetch_expenses(db: AsyncSession, user_id: int) -> HomeExpenseSummary:
 
 async def _fetch_goal(db: AsyncSession, user_id: int) -> Optional[HomeGoalSummary]:
     """
-    Return the most recent incomplete savings goal for the SavingsBanner.
+    Return the active savings goal closest to completion for the SavingsBanner.
+
+    Ordering: (saved_amount / target_amount) DESC — the goal with the highest
+    completion ratio is shown first, motivating the user to finish it.
+
+    A CASE guard prevents division-by-zero when target_amount is 0;
+    such rows sort to the bottom (ratio treated as 0).
+
     Returns None if the user has no active goals.
-    Uses ix_goals_user_completed + ix_goals_created_at.
+    Uses ix_goals_user_completed.
     """
+    # Completion ratio expression — safe against target_amount = 0
+    completion_ratio = case(
+        (Goal.target_amount > 0, Goal.saved_amount / Goal.target_amount),
+        else_=0,
+    )
+
     result = await db.execute(
         select(Goal)
         .where(
             Goal.user_id      == user_id,
             Goal.is_completed == False,   # noqa: E712
         )
-        .order_by(Goal.created_at.desc())
+        .order_by(completion_ratio.desc())   # closest to 100 % first
         .limit(1)
     )
     goal = result.scalars().first()
@@ -348,6 +361,11 @@ Returns a single payload containing everything the screen needs:
 | DailySummaryCard | `expenses.spent_today` | "Spent Today" header |
 | TodayExpensesSection | `expenses.expenses` | 3-card expense list |
 | SavingsBanner | `goal.*` | Goal name, saved/target, progress |
+
+**Goal selection:** the goal with the highest `saved_amount / target_amount`
+ratio is returned — i.e. the one closest to completion. This maximises
+motivation by showing the user the goal they are about to achieve.
+Goals with `target_amount = 0` are treated as 0 % and sort to the bottom.
 
 **`goal` is `null`** when the user has no active savings goals — the
 Android app should hide the `SavingsBanner` composable in that case.
