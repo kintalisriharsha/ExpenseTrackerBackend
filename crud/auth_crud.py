@@ -3,7 +3,8 @@ from sqlalchemy import select, delete
 from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException, status
 import logging, secrets, hashlib
-
+from crud.setting_crud import init_settings
+from schemas.setting_schema import SettingsInit
 from models.user_model import User, BlacklistedToken, AuthProvider
 
 logger = logging.getLogger(__name__)
@@ -34,19 +35,18 @@ async def _init_default_settings(db: AsyncSession, user_id: int) -> None:
     so all seeding logic (current month, zero values) lives in one place.
     Imported locally to avoid a circular import between auth_crud ↔ setting_crud.
     """
-    from crud.setting_crud import init_budget
-    from schemas.setting_schema import BudgetInit
 
-    payload = BudgetInit(
+
+    payload = SettingsInit(
         monthly_budget       = 0.0,
         daily_limit          = 0.0,
         notification_enabled = False,
         is_dark_mode         = False,
-        apply_to_all_months  = False,   # only seed the current month
+        apply_to_all_months  = False,
     )
 
     try:
-        await init_budget(db, user_id, payload)
+        await init_settings(db, user_id, payload)
         logger.warning(f"Default settings created for user_id={user_id}")
     except HTTPException as e:
         # 409 = settings already exist — safe to swallow, never block signup
