@@ -20,6 +20,7 @@ def _empty_month_entry() -> dict:
 
 class MonthEntry(BaseModel):
     monthly_budget: float = 0.0
+    weekly_budget:  float = 0.0
     daily_limit:    float = 0.0
 
 
@@ -27,6 +28,7 @@ class MonthEntry(BaseModel):
 
 class SettingsInit(BaseModel):
     monthly_budget:       float = Field(..., ge=0)
+    weekly_budget:        float = Field(..., ge=0)
     daily_limit:          float = Field(..., ge=0)
     notification_enabled: bool  = False
     is_dark_mode:         bool  = False
@@ -35,6 +37,7 @@ class SettingsInit(BaseModel):
 
 class SettingsUpdate(BaseModel):
     monthly_budget:       float          = Field(..., ge=0)
+    weekly_budget:        float = Field(..., ge=0)
     daily_limit:          float          = Field(..., ge=0)
     notification_enabled: bool           = False
     is_dark_mode:         bool           = False
@@ -52,6 +55,7 @@ class SettingsResponse(BaseModel):
     year:                       int
     month:                      str
     monthly_budget:             float
+    weekly_budget:              float
     daily_limit:                float
     notification_enabled:       bool
     is_dark_mode:               bool
