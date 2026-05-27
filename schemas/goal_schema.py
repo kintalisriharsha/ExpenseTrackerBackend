@@ -21,7 +21,20 @@ from pydantic import BaseModel, Field, field_validator
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-VALID_CATEGORIES = {"Travel", "Home", "Electronics", "Other"}
+VALID_CATEGORIES = {
+    "Electronics",
+    "Home",
+    "Travel",
+    "Other",
+    "Food",
+    "Health",
+    "Education",
+    "Vehicle",
+    "Fashion",
+    "Entertainment",
+    "Investment",
+    "Emergency",
+}
 AMOUNT_MAX = 200_000.00   # ₹2,00,000 — matches frontend cap
 
 
