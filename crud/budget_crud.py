@@ -20,28 +20,34 @@ Tasks are stored inside a JSON dict keyed by ISO date string.
 _find_task() scans all days to locate a task by its UUID — since a week
 has at most ~20 tasks this is O(n) and fast enough without a secondary index.
 
+Weekly budget source
+────────────────────
+weekly_budget is NO LONGER stored on BudgetActive.
+It is read from Settings.budget_data (current month entry) on every
+response build so there is a single source of truth.
+
 Rollover (Monday WorkManager)
 ─────────────────────────────
 1. Read budget_active for the user.
 2. If week_start is already this Monday → already rolled over, return early.
 3. Copy budget_active → INSERT into budget_history (idempotent via ON CONFLICT DO NOTHING).
 4. Reset budget_active: clear tasks_data, reset total_spent = 0,
-   set week_start = this Monday, optionally carry forward weekly_budget.
+   set week_start = this Monday.
+   weekly_budget is NOT carried forward here — it always comes from Settings.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
-import uuid
 from datetime import date, timedelta
-from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.budget_model import BudgetActive, BudgetHistory
+from models.setting_model import Settings
 from schemas.budget_schema import (
     AddTaskRequest,
     UpdateTaskRequest,
@@ -50,7 +56,6 @@ from schemas.budget_schema import (
     DayPlanResponse,
     TaskResponse,
     DeleteTaskResponse,
-    WeeklyBudgetResponse,
     HistoryWeekSummary,
     HistoryListResponse,
     RolloverResponse,
@@ -58,16 +63,20 @@ from schemas.budget_schema import (
 
 logger = logging.getLogger(__name__)
 
+# ── MONTHS list (mirrors setting_crud) ────────────────────────────────────────
+
+MONTHS = ["jan", "feb", "mar", "apr", "may", "jun",
+          "jul", "aug", "sep", "oct", "nov", "dec"]
+
 
 # ── Private week helpers ───────────────────────────────────────────────────────
 
 def _monday_of(d: date) -> date:
     """Return the Monday of the week containing d."""
-    return d - timedelta(days=d.weekday())   # weekday(): Mon=0 … Sun=6
+    return d - timedelta(days=d.weekday())
 
 
 def _sunday_of(monday: date) -> date:
-    """Return the Sunday of the week starting on monday."""
     return monday + timedelta(days=6)
 
 
@@ -77,12 +86,10 @@ def _week_dates(monday: date) -> list[str]:
 
 
 def _empty_tasks_data(monday: date) -> dict:
-    """Return a tasks_data dict with empty lists for all 7 days."""
     return {d: [] for d in _week_dates(monday)}
 
 
 def _recalc_total(tasks_data: dict) -> float:
-    """Sum all task budgets across all days. Used to keep total_spent in sync."""
     total = 0.0
     for day_tasks in tasks_data.values():
         for task in day_tasks:
@@ -91,10 +98,6 @@ def _recalc_total(tasks_data: dict) -> float:
 
 
 def _find_task(tasks_data: dict, task_id: str) -> tuple[str, int] | None:
-    """
-    Locate a task by its UUID across all days.
-    Returns (day_key, list_index) or None if not found.
-    """
     for day_key, day_tasks in tasks_data.items():
         for idx, task in enumerate(day_tasks):
             if task.get("id") == task_id:
@@ -102,13 +105,52 @@ def _find_task(tasks_data: dict, task_id: str) -> tuple[str, int] | None:
     return None
 
 
-def _build_active_response(active: BudgetActive) -> ActiveWeekResponse:
-    """Convert a BudgetActive ORM row → ActiveWeekResponse."""
+def _today_year_month() -> tuple[str, str]:
+    today = date.today()
+    return str(today.year), MONTHS[today.month - 1]
+
+
+# ── Private: read weekly_budget from Settings ──────────────────────────────────
+
+async def _get_weekly_budget_from_settings(
+    db      : AsyncSession,
+    user_id : int,
+) -> float:
+    """
+    Read the current month's weekly_budget from Settings.budget_data.
+    Returns 0.0 if Settings row doesn't exist or field is missing.
+    This is the single source of truth for weekly_budget.
+    """
+    result = await db.execute(
+        select(Settings).where(Settings.user_id == user_id)
+    )
+    settings = result.scalars().first()
+
+    if not settings:
+        return 0.0
+
+    year_str, month_str = _today_year_month()
+    month_entry = (
+        settings.budget_data
+        .get(year_str, {})
+        .get(month_str, {})
+    )
+    return float(month_entry.get("weekly_budget", 0.0))
+
+
+# ── Private: build response ────────────────────────────────────────────────────
+
+def _build_active_response(
+    active        : BudgetActive,
+    weekly_budget : float,
+) -> ActiveWeekResponse:
+    """Convert a BudgetActive ORM row → ActiveWeekResponse.
+    weekly_budget is injected from Settings — not read from BudgetActive.
+    """
     monday   = active.week_start
     sunday   = _sunday_of(monday)
-    budget   = float(active.weekly_budget)
     spent    = float(active.total_spent)
-    exceeded = budget > 0.0 and spent > budget
+    exceeded = weekly_budget > 0.0 and spent > weekly_budget
 
     days = []
     for day_str in _week_dates(monday):
@@ -120,7 +162,7 @@ def _build_active_response(active: BudgetActive) -> ActiveWeekResponse:
         user_id         = active.user_id,
         week_start      = monday,
         week_end        = sunday,
-        weekly_budget   = budget,
+        weekly_budget   = weekly_budget,
         total_spent     = spent,
         weekly_exceeded = exceeded,
         days            = days,
@@ -141,6 +183,7 @@ async def _get_active_or_create(db: AsyncSession, user_id: int) -> BudgetActive:
     """
     Return the active week row, creating it if this user has never
     opened the Budget Planner before.
+    Note: weekly_budget is no longer a column — not set here.
     """
     active = await _get_active(db, user_id)
     if active:
@@ -148,11 +191,10 @@ async def _get_active_or_create(db: AsyncSession, user_id: int) -> BudgetActive:
 
     monday = _monday_of(date.today())
     active = BudgetActive(
-        user_id       = user_id,
-        week_start    = monday,
-        weekly_budget = 0.0,
-        total_spent   = 0.0,
-        tasks_data    = _empty_tasks_data(monday),
+        user_id     = user_id,
+        week_start  = monday,
+        total_spent = 0.0,
+        tasks_data  = _empty_tasks_data(monday),
     )
     db.add(active)
     await db.flush()
@@ -170,43 +212,12 @@ async def get_active_week(
 ) -> ActiveWeekResponse:
     """
     Return the current week's full plan.
-    Auto-creates the row if this user has never opened BudgetScreen before.
-    Called every time the BudgetScreen composable loads.
+    weekly_budget is read from Settings — single source of truth.
+    Auto-creates the BudgetActive row if needed.
     """
-    active = await _get_active_or_create(db, user_id)
-    return _build_active_response(active)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# UPDATE — weekly budget cap
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def set_weekly_budget(
-    db            : AsyncSession,
-    user_id       : int,
-    weekly_budget : float,
-) -> WeeklyBudgetResponse:
-    """
-    Set or update the weekly budget cap.
-    Called when user confirms WeeklyBudgetDialog.
-    """
-    active = await _get_active_or_create(db, user_id)
-    active.weekly_budget = weekly_budget
-    await db.flush()
-
-    spent    = float(active.total_spent)
-    exceeded = weekly_budget > 0.0 and spent > weekly_budget
-
-    logger.info(
-        f"Weekly budget set: user_id={user_id} "
-        f"weekly_budget={weekly_budget} total_spent={spent}"
-    )
-
-    return WeeklyBudgetResponse(
-        weekly_budget   = weekly_budget,
-        total_spent     = spent,
-        weekly_exceeded = exceeded,
-    )
+    active        = await _get_active_or_create(db, user_id)
+    weekly_budget = await _get_weekly_budget_from_settings(db, user_id)
+    return _build_active_response(active, weekly_budget)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -220,16 +231,11 @@ async def add_task(
 ) -> TaskResponse:
     """
     Add a task to a specific day in the active week.
-    Called when user confirms AddTaskBottomSheet.
-
-    Raises 400 if the day_date is outside the current active week.
-    Raises 409 if task ID already exists (duplicate client UUID).
-    Raises 403 if weekly budget is set and adding this task would exceed it
-               and the user hasn't explicitly overridden (handled on Android side,
-               but server validates too for safety).
+    weekly_budget is read from Settings for the exceeded check.
     """
-    active   = await _get_active_or_create(db, user_id)
-    day_str  = payload.day_date.isoformat()
+    active        = await _get_active_or_create(db, user_id)
+    weekly_budget = await _get_weekly_budget_from_settings(db, user_id)
+    day_str       = payload.day_date.isoformat()
 
     # Validate day is within active week
     valid_days = _week_dates(active.week_start)
@@ -247,26 +253,23 @@ async def add_task(
             detail=f"Task id={payload.id!r} already exists in the active week.",
         )
 
-    # Weekly budget enforcement
-    budget = float(active.weekly_budget)
-    spent  = float(active.total_spent)
-    if budget > 0.0 and (spent + payload.budget) > budget:
+    # Weekly budget exceeded check
+    new_total = float(active.total_spent) + payload.budget
+    if weekly_budget > 0.0 and new_total > weekly_budget:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"Adding this task (₹{payload.budget:.2f}) would exceed the "
-                f"weekly budget of ₹{budget:.2f}. "
-                f"Currently spent: ₹{spent:.2f}, "
-                f"remaining: ₹{max(budget - spent, 0):.2f}."
+                f"Adding this task (₹{payload.budget}) would exceed the weekly "
+                f"budget (₹{weekly_budget}). Current spent: ₹{active.total_spent}."
             ),
         )
 
-    # Mutate JSON (deep copy required for SQLAlchemy change detection)
+    # Mutate JSON
     new_data = copy.deepcopy(active.tasks_data)
     new_task = {
-        "id":      payload.id,
-        "name":    payload.name,
-        "budget":  payload.budget,
+        "id"     : payload.id,
+        "name"   : payload.name,
+        "budget" : payload.budget,
         "is_done": False,
     }
     new_data.setdefault(day_str, []).append(new_task)
@@ -276,24 +279,24 @@ async def add_task(
     await db.flush()
 
     new_spent    = float(active.total_spent)
-    new_exceeded = budget > 0.0 and new_spent > budget
+    new_exceeded = weekly_budget > 0.0 and new_spent > weekly_budget
 
     logger.info(
-        f"Task added: user_id={user_id} task_id={payload.id!r} "
-        f"day={day_str} budget={payload.budget} total_spent={new_spent}"
+        f"Task added: user_id={user_id} day={day_str} "
+        f"id={payload.id!r} budget={payload.budget} total_spent={new_spent}"
     )
 
     return TaskResponse(
         task            = TaskItem(**new_task),
         day_date        = payload.day_date,
         total_spent     = new_spent,
-        weekly_budget   = budget,
+        weekly_budget   = weekly_budget,
         weekly_exceeded = new_exceeded,
     )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UPDATE — edit task (PATCH semantics)
+# UPDATE — edit task
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def update_task(
@@ -304,13 +307,11 @@ async def update_task(
 ) -> TaskResponse:
     """
     Edit a task's name, budget, or is_done flag.
-    Called from EditTaskBottomSheet or checkbox toggle.
-    PATCH semantics — only supplied fields are updated.
-
-    Raises 404 if task not found in the active week.
+    weekly_budget is read from Settings for the exceeded check.
     """
-    active  = await _get_active_or_create(db, user_id)
-    located = _find_task(active.tasks_data, task_id)
+    active        = await _get_active_or_create(db, user_id)
+    weekly_budget = await _get_weekly_budget_from_settings(db, user_id)
+    located       = _find_task(active.tasks_data, task_id)
 
     if located is None:
         raise HTTPException(
@@ -332,9 +333,8 @@ async def update_task(
     active.total_spent = _recalc_total(new_data)
     await db.flush()
 
-    budget       = float(active.weekly_budget)
     new_spent    = float(active.total_spent)
-    new_exceeded = budget > 0.0 and new_spent > budget
+    new_exceeded = weekly_budget > 0.0 and new_spent > weekly_budget
 
     logger.info(
         f"Task updated: user_id={user_id} task_id={task_id!r} "
@@ -345,7 +345,7 @@ async def update_task(
         task            = TaskItem(**task),
         day_date        = date.fromisoformat(day_key),
         total_spent     = new_spent,
-        weekly_budget   = budget,
+        weekly_budget   = weekly_budget,
         weekly_exceeded = new_exceeded,
     )
 
@@ -361,11 +361,11 @@ async def delete_task(
 ) -> DeleteTaskResponse:
     """
     Remove a task from the active week.
-    Called from the delete icon in TaskRow.
-    Raises 404 if task not found.
+    weekly_budget is read from Settings.
     """
-    active  = await _get_active_or_create(db, user_id)
-    located = _find_task(active.tasks_data, task_id)
+    active        = await _get_active_or_create(db, user_id)
+    weekly_budget = await _get_weekly_budget_from_settings(db, user_id)
+    located       = _find_task(active.tasks_data, task_id)
 
     if located is None:
         raise HTTPException(
@@ -382,9 +382,8 @@ async def delete_task(
     active.total_spent = _recalc_total(new_data)
     await db.flush()
 
-    budget       = float(active.weekly_budget)
     new_spent    = float(active.total_spent)
-    new_exceeded = budget > 0.0 and new_spent > budget
+    new_exceeded = weekly_budget > 0.0 and new_spent > weekly_budget
 
     logger.info(
         f"Task deleted: user_id={user_id} task_id={task_id!r} "
@@ -394,7 +393,7 @@ async def delete_task(
     return DeleteTaskResponse(
         deleted_id      = task_id,
         total_spent     = new_spent,
-        weekly_budget   = budget,
+        weekly_budget   = weekly_budget,
         weekly_exceeded = new_exceeded,
     )
 
@@ -404,9 +403,9 @@ async def delete_task(
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def rollover_week(
-    db                    : AsyncSession,
-    user_id               : int,
-    carry_forward_budget  : bool,
+    db                   : AsyncSession,
+    user_id              : int,
+    carry_forward_budget : bool,
 ) -> RolloverResponse:
     """
     Called by Android WorkManager every Monday morning.
@@ -414,15 +413,15 @@ async def rollover_week(
     Steps:
     1. Check if active week_start is already this Monday → idempotent early return.
     2. Archive current active data → INSERT into budget_history.
-       Uses INSERT ... ON CONFLICT DO NOTHING so double-firing is safe.
-    3. Reset budget_active for the new week:
-       - week_start = this Monday
-       - tasks_data = empty 7-day structure
-       - total_spent = 0
-       - weekly_budget = carried forward or reset to 0
+    3. Reset budget_active for the new week.
+
+    weekly_budget in the response is always read from Settings —
+    carry_forward_budget flag is kept for API compatibility but no
+    longer writes to BudgetActive (Settings is the source of truth).
     """
-    this_monday = _monday_of(date.today())
-    active      = await _get_active_or_create(db, user_id)
+    this_monday   = _monday_of(date.today())
+    active        = await _get_active_or_create(db, user_id)
+    weekly_budget = await _get_weekly_budget_from_settings(db, user_id)
 
     # ── Idempotent check ──────────────────────────────────────────────
     if active.week_start == this_monday:
@@ -431,17 +430,16 @@ async def rollover_week(
             f"user_id={user_id} week_start={this_monday}"
         )
         return RolloverResponse(
-            action                  = "already_rolled",
-            archived_week_start     = None,
-            new_week_start          = this_monday,
-            carried_forward_budget  = float(active.weekly_budget),
+            action                 = "already_rolled",
+            archived_week_start    = None,
+            new_week_start         = this_monday,
+            carried_forward_budget = weekly_budget,
         )
 
     archived_week_start = active.week_start
     archived_week_end   = _sunday_of(archived_week_start)
 
     # ── Step 1: Archive current active week ───────────────────────────
-    # Check for existing history row first (idempotent safety)
     existing_history = await db.execute(
         select(BudgetHistory).where(
             BudgetHistory.user_id    == user_id,
@@ -453,7 +451,7 @@ async def rollover_week(
             user_id       = user_id,
             week_start    = archived_week_start,
             week_end      = archived_week_end,
-            weekly_budget = active.weekly_budget,
+            weekly_budget = weekly_budget,   # snapshot from Settings at rollover time
             total_spent   = active.total_spent,
             tasks_data    = copy.deepcopy(active.tasks_data),
         )
@@ -466,25 +464,21 @@ async def rollover_week(
         )
 
     # ── Step 2: Reset active for new week ─────────────────────────────
-    new_budget = float(active.weekly_budget) if carry_forward_budget else 0.0
-
-    active.week_start    = this_monday
-    active.weekly_budget = new_budget
-    active.total_spent   = 0.0
-    active.tasks_data    = _empty_tasks_data(this_monday)
+    active.week_start  = this_monday
+    active.total_spent = 0.0
+    active.tasks_data  = _empty_tasks_data(this_monday)
     await db.flush()
 
     logger.info(
         f"Rollover complete: user_id={user_id} "
-        f"archived={archived_week_start} new={this_monday} "
-        f"budget={new_budget} carry_forward={carry_forward_budget}"
+        f"archived={archived_week_start} new={this_monday}"
     )
 
     return RolloverResponse(
-        action                  = "rolled_over",
-        archived_week_start     = archived_week_start,
-        new_week_start          = this_monday,
-        carried_forward_budget  = new_budget,
+        action                 = "rolled_over",
+        archived_week_start    = archived_week_start,
+        new_week_start         = this_monday,
+        carried_forward_budget = weekly_budget,
     )
 
 
@@ -499,16 +493,14 @@ async def get_history(
     offset  : int = 0,
 ) -> HistoryListResponse:
     """
-    Return past weeks for the BudgetHistory tab.
-    Newest week first. tasks_data included for drill-down on tap.
+    Return past weeks for the BudgetHistory tab. Newest week first.
+    weekly_budget in history rows is the snapshot taken at rollover time.
     """
-    # Total count
     count_result = await db.execute(
         select(func.count()).where(BudgetHistory.user_id == user_id)
     )
     total = count_result.scalar_one()
 
-    # Paginated rows — newest first
     result = await db.execute(
         select(BudgetHistory)
         .where(BudgetHistory.user_id == user_id)
@@ -520,17 +512,17 @@ async def get_history(
 
     weeks = [
         HistoryWeekSummary(
-            id             = row.id,
-            week_start     = row.week_start,
-            week_end       = row.week_end,
-            weekly_budget  = float(row.weekly_budget),
-            total_spent    = float(row.total_spent),
-            within_budget  = (
+            id            = row.id,
+            week_start    = row.week_start,
+            week_end      = row.week_end,
+            weekly_budget = float(row.weekly_budget),
+            total_spent   = float(row.total_spent),
+            within_budget = (
                 row.weekly_budget == 0.0 or
                 float(row.total_spent) <= float(row.weekly_budget)
             ),
-            tasks_data     = row.tasks_data,
-            created_at     = row.created_at,
+            tasks_data    = row.tasks_data,
+            created_at    = row.created_at,
         )
         for row in rows
     ]
