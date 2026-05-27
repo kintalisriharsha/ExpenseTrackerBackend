@@ -6,8 +6,8 @@ All database operations for the settings feature.
 JSON structure operated on:
 {
     "2026": {
-        "jan": { "monthly_budget": 4500.0, "daily_limit": 150.0 },
-        "feb": { "monthly_budget": 4200.0, "daily_limit": 130.0 },
+        "jan": { "monthly_budget": 4500.0, "weekly_budget": 1000.0, "daily_limit": 150.0 },
+        "feb": { "monthly_budget": 4200.0, "weekly_budget": 900.0,  "daily_limit": 130.0 },
         ...
     }
 }
@@ -76,7 +76,7 @@ def _get_month_entry(budget_data: dict, year_str: str, month_str: str) -> dict:
 async def _sync_to_user(
     db      : AsyncSession,
     user_id : int,
-    entry   : dict,         # { "monthly_budget": x, "daily_limit": y }
+    entry   : dict,
 ) -> None:
     """
     Write the given month entry's values directly to the User row.
@@ -94,8 +94,23 @@ async def _sync_to_user(
     logger.info(
         f"Synced user_id={user_id}: "
         f"monthly_budget={entry.get('monthly_budget')}, "
+        f"weekly_budget={entry.get('weekly_budget')}, "
         f"daily_budget={entry.get('daily_limit')}"
     )
+
+
+# ── Validation helper ──────────────────────────────────────────────────────────
+
+def _validate_budget_hierarchy(monthly_budget: float, weekly_budget: float, daily_limit: float) -> None:
+    """
+    Enforce: daily_limit <= weekly_budget <= monthly_budget.
+    Raises 422 if any constraint is violated.
+    """
+    if weekly_budget > monthly_budget:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"weekly_budget ({weekly_budget}) cannot exceed monthly_budget ({monthly_budget}).",
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -131,6 +146,7 @@ async def init_settings(
     """
     Create a Settings row for the user.
     Raises 409 if one already exists.
+    Raises 422 if weekly_budget > monthly_budget.
 
     Persists notification_enabled and is_dark_mode from the payload.
 
@@ -143,9 +159,16 @@ async def init_settings(
             detail="Settings already initialised. Use PATCH /setting to update.",
         )
 
+    _validate_budget_hierarchy(
+        payload.monthly_budget,
+        payload.weekly_budget,
+        payload.daily_limit,
+    )
+
     year_str, month_str = _today_year_month()
     entry = {
         "monthly_budget": payload.monthly_budget,
+        "weekly_budget" : payload.weekly_budget,
         "daily_limit"   : payload.daily_limit,
     }
 
@@ -179,21 +202,29 @@ async def update_settings(
     payload : SettingsUpdate,
 ) -> tuple[Settings, str, str, dict]:
     """
-    Save the monthly_budget and daily_limit for a specific month,
+    Save the monthly_budget, weekly_budget, and daily_limit for a specific month,
     and always persist notification_enabled and is_dark_mode to the row.
     Defaults to the current year/month if not provided in payload.
+    Raises 422 if weekly_budget > monthly_budget.
 
     Returns (settings, year_str, month_str, entry).
     """
+    _validate_budget_hierarchy(
+        payload.monthly_budget,
+        payload.weekly_budget,
+        payload.daily_limit,
+    )
+
     settings = await get_settings_or_404(db, user_id)
 
     # Resolve target year/month
     today = date.today()
-    year_str  = str(payload.year)       if payload.year  else str(today.year)
-    month_str = payload.month.lower()   if payload.month else MONTHS[today.month - 1]
+    year_str  = str(payload.year)     if payload.year  else str(today.year)
+    month_str = payload.month.lower() if payload.month else MONTHS[today.month - 1]
 
     entry = {
         "monthly_budget": payload.monthly_budget,
+        "weekly_budget" : payload.weekly_budget,
         "daily_limit"   : payload.daily_limit,
     }
 
@@ -278,6 +309,7 @@ async def _carry_forward(
     """
     Internal carry-forward logic shared by the public endpoint and auto-trigger.
     Preferences (notification_enabled, is_dark_mode) are never touched here.
+    weekly_budget is carried forward alongside monthly_budget and daily_limit.
 
     Returns (action, source_entry, target_entry).
     """
@@ -357,4 +389,3 @@ async def carry_forward_month(
         "user_monthly_budget_synced": values_now.get("monthly_budget") if action != "already_set" else None,
         "user_daily_limit_synced"   : values_now.get("daily_limit")    if action != "already_set" else None,
     }
-
