@@ -48,7 +48,7 @@ async_engine = create_async_engine(
         "ssl":              "require",          # Neon requires SSL
         "timeout":          10,                 # connection timeout seconds
         "command_timeout":  30,                 # query timeout seconds
-        "statement_cache_size": 100,            # cache 100 prepared statements
+        "statement_cache_size": 500,            # cache 100 prepared statements
         "server_settings": {
             "application_name": "expense_tracker_api",
             "jit":              "off"           # disable JIT — faster for short queries

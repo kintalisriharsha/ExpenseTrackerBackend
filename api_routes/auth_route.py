@@ -256,20 +256,19 @@ async def logout(
 
 # ── GET /auth/me ──────────────────────────────────────────────────────────────
 
-@router.get(
-    "/me",
-    response_model=UserResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Get current user profile",
-)
-async def get_me(
-    db          : AsyncSession = Depends(get_db),
-    current_user: dict         = Depends(get_current_user),
-):
-    user = await get_user_by_id(db, current_user["id"])
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return UserResponse.model_validate(user)
+@router.get("/me", response_model=UserResponse, status_code=status.HTTP_200_OK)
+async def get_me(current_user: dict = Depends(get_current_user)):
+    return UserResponse(
+        id             = current_user["id"],
+        email          = current_user["email"],
+        display_name   = current_user.get("display_name"),
+        mobile_number  = current_user.get("mobile_number"),
+        auth_provider  = "email",
+        email_verified = True,
+        daily_budget   = current_user["daily_budget"],
+        monthly_budget = current_user["monthly_budget"],
+        created_at     = current_user["created_at"],
+    )
 
 
 # ── PATCH /auth/me/profile ────────────────────────────────────────────────────

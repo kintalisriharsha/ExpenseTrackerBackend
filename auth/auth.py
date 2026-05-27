@@ -25,21 +25,16 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/email/verify-otp")
 # ── Token creation ─────────────────────────────────────────────────────────────
 
 def create_access_token(user: object) -> str:
-    """
-    Access token — short-lived (15 min).
-    Carries user identity + budget context so the app can work offline.
-    Includes a jti so individual access tokens can be blacklisted if needed.
-    """
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub":            str(user.id),
         "email":          user.email,
-        "display_name":   user.display_name,
+        "display_name":   user.display_name or "",
+        "mobile_number":  user.mobile_number or "",
         "daily_budget":   float(user.daily_budget   or 0.0),
         "monthly_budget": float(user.monthly_budget or 0.0),
+        "created_at":     user.created_at.isoformat(),
         "type":           "access",
-        "jti":            str(uuid.uuid4()),   # ← added: lets us blacklist access tokens too
-        "iat":            datetime.now(timezone.utc),
         "exp":            expire,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -87,18 +82,13 @@ def decode_token(token: str, expected_type: str = "access") -> dict:
 # ── FastAPI dependency ─────────────────────────────────────────────────────────
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    """
-    Lightweight dependency — decodes the access token only (no DB hit).
-    Use this on every protected route that just needs the user identity.
-    For routes that need the full User ORM object, call get_user_by_id after this.
-    """
     payload = decode_token(token, expected_type="access")
     return {
         "id":             int(payload["sub"]),
         "email":          payload.get("email"),
         "display_name":   payload.get("display_name"),
+        "mobile_number":  payload.get("mobile_number"),
         "daily_budget":   float(payload.get("daily_budget",   0.0)),
         "monthly_budget": float(payload.get("monthly_budget", 0.0)),
-        "jti":            payload.get("jti"),
+        "created_at":     payload.get("created_at"),
     }
-

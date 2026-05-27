@@ -38,6 +38,8 @@ from models.budget_model import BudgetActive
 from models.expense_model import Expense
 from models.goal_model import Goal
 
+import asyncio
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/home", tags=["home"])
@@ -415,9 +417,12 @@ async def get_home_route(
     # Three independent DB reads — each hits a different table/index.
     # All three are awaited sequentially; switch to asyncio.gather if
     # sub-millisecond latency becomes a concern at scale.
-    budget   = await _fetch_budget(db, user_id)
-    expenses = await _fetch_expenses(db, user_id)
-    goal     = await _fetch_goal(db, user_id)
+
+    budget, expenses, goal = await asyncio.gather(
+        _fetch_budget(db, user_id),
+        _fetch_expenses(db, user_id),
+        _fetch_goal(db, user_id)
+    )
 
     logger.info(
         f"Home loaded: user_id={user_id} "
