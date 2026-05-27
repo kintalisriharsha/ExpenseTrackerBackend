@@ -15,44 +15,52 @@ Why one endpoint?
 Endpoint
 ────────
 GET /home   → HomeResponse
-    ├── budget   : BudgetSummary       (WeeklyBudgetCard / DailySummaryCard)
-    ├── expenses : HomExpenseSummary   (TodayExpensesSection / DailySummaryCard)
-    └── goal     : HomeGoalSummary | None   (SavingsBanner — null if no active goal)
+    ├── budget   : HomeBudgetSummary   (WeeklyBudgetCard / DailySummaryCard)
+    ├── expenses : HomeExpenseSummary  (TodayExpensesSection / DailySummaryCard)
+    └── goal     : HomeGoalSummary | None  (SavingsBanner — null if no active goal)
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
-from sqlalchemy import cast, case, func, select
+from sqlalchemy import cast, case, select
 from sqlalchemy import Date as SADate
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.auth import get_current_user
-from db import get_db, AsyncSessionLocal          # ← import the sessionmaker
+from db import get_db, AsyncSessionLocal
 from models.budget_model import BudgetActive
 from models.expense_model import Expense
 from models.goal_model import Goal
-
-import asyncio
+from models.setting_model import Settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/home", tags=["home"])
 
+# Month abbreviations — mirrors setting_crud.py
+MONTHS = ["jan", "feb", "mar", "apr", "may", "jun",
+          "jul", "aug", "sep", "oct", "nov", "dec"]
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Response schemas (home-specific, no separate schema file needed)
+# Response schemas
 # ══════════════════════════════════════════════════════════════════════════════
 
 class HomeBudgetSummary(BaseModel):
+    # ── from Settings (single source of truth) ────────────────────────
     weekly_budget   : float
+    daily_limit     : float          # ← NEW
+    monthly_budget  : float          # ← NEW
+    # ── from BudgetActive (live week data) ───────────────────────────
     total_spent     : float
-    remaining       : float
+    weekly_remaining: float
     weekly_exceeded : bool
     week_start      : Optional[date]
     week_end        : Optional[date]
@@ -92,7 +100,6 @@ class HomeResponse(BaseModel):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _week_end(week_start: date) -> date:
-    from datetime import timedelta
     return week_start + timedelta(days=6)
 
 
@@ -108,41 +115,69 @@ def _fmt_time(dt: datetime) -> str:
     return dt.strftime("%I:%M %p")
 
 
+def _get_current_month_entry(budget_data: dict) -> dict:
+    """Read current month's entry from Settings.budget_data."""
+    today     = date.today()
+    year_str  = str(today.year)
+    month_str = MONTHS[today.month - 1]
+    return budget_data.get(year_str, {}).get(month_str, {})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Data fetchers — each opens its OWN session so they can run concurrently
-# via asyncio.gather without hitting SQLAlchemy's single-session restriction.
+# Data fetchers — each opens its OWN session for concurrent asyncio.gather
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _fetch_budget(user_id: int) -> HomeBudgetSummary:
-    """Own session — safe to run concurrently."""
+    """
+    Reads budget limits from Settings (single source of truth)
+    and live totals from BudgetActive.
+    """
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
+        # ── Settings: weekly_budget, daily_limit, monthly_budget ──────
+        settings_result = await db.execute(
+            select(Settings).where(Settings.user_id == user_id)
+        )
+        settings = settings_result.scalars().first()
+
+        # ── BudgetActive: total_spent, week_start ─────────────────────
+        active_result = await db.execute(
             select(BudgetActive).where(BudgetActive.user_id == user_id)
         )
-        active = result.scalars().first()
+        active = active_result.scalars().first()
 
-    if not active:
-        return HomeBudgetSummary(
-            weekly_budget   = 0.0,
-            total_spent     = 0.0,
-            remaining       = 0.0,
-            weekly_exceeded = False,
-            week_start      = None,
-            week_end        = None,
-        )
+    # ── Extract limits from Settings ──────────────────────────────────
+    if settings:
+        entry          = _get_current_month_entry(settings.budget_data)
+        weekly_budget  = float(entry.get("weekly_budget",  0.0))
+        daily_limit    = float(entry.get("daily_limit",    0.0))
+        monthly_budget = float(entry.get("monthly_budget", 0.0))
+    else:
+        weekly_budget  = 0.0
+        daily_limit    = 0.0
+        monthly_budget = 0.0
 
-    weekly    = float(active.weekly_budget)
-    spent     = float(active.total_spent)
-    remaining = round(weekly - spent, 2)
-    exceeded  = (weekly > 0) and (spent > weekly)
+    # ── Extract live totals from BudgetActive ─────────────────────────
+    if active:
+        total_spent      = float(active.total_spent)
+        week_start       = active.week_start
+        week_end         = _week_end(week_start)
+    else:
+        total_spent      = 0.0
+        week_start       = None
+        week_end         = None
+
+    weekly_remaining = round(weekly_budget - total_spent, 2)
+    weekly_exceeded  = weekly_budget > 0.0 and total_spent > weekly_budget
 
     return HomeBudgetSummary(
-        weekly_budget   = weekly,
-        total_spent     = spent,
-        remaining       = remaining,
-        weekly_exceeded = exceeded,
-        week_start      = active.week_start,
-        week_end        = _week_end(active.week_start),
+        weekly_budget    = weekly_budget,
+        daily_limit      = daily_limit,
+        monthly_budget   = monthly_budget,
+        total_spent      = total_spent,
+        weekly_remaining = weekly_remaining,
+        weekly_exceeded  = weekly_exceeded,
+        week_start       = week_start,
+        week_end         = week_end,
     )
 
 
@@ -225,15 +260,13 @@ async def _fetch_goal(user_id: int) -> Optional[HomeGoalSummary]:
     "",
     response_model=HomeResponse,
     status_code=status.HTTP_200_OK,
-    summary="Home screen — budget, today's expenses, and top savings goal in one call",
+    summary="Home screen — budget limits from Settings, live totals from BudgetActive",
 )
 async def get_home_route(
-    current_user : dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> HomeResponse:
     user_id = current_user["id"]
 
-    # Each fetcher opens its own AsyncSession, so all three can run in
-    # parallel without SQLAlchemy's single-session concurrency error.
     budget, expenses, goal = await asyncio.gather(
         _fetch_budget(user_id),
         _fetch_expenses(user_id),
@@ -243,6 +276,8 @@ async def get_home_route(
     logger.info(
         f"Home loaded: user_id={user_id} "
         f"spent_today={expenses.spent_today} "
+        f"weekly_budget={budget.weekly_budget} "
+        f"daily_limit={budget.daily_limit} "
         f"active_goal={'yes' if goal else 'none'}"
     )
 
