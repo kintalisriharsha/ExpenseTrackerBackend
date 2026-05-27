@@ -87,6 +87,7 @@ async def _sync_to_user(
         .where(User.id == user_id)
         .values(
             monthly_budget = float(entry.get("monthly_budget", 0.0)),
+            weekly_budget = float(entry.get("weekly_budget", 0.0)),
             daily_budget   = float(entry.get("daily_limit",    0.0)),
         )
     )

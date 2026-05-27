@@ -90,6 +90,7 @@ class HomeGoalSummary(BaseModel):
 
 
 class HomeResponse(BaseModel):
+    user_name: str
     budget   : HomeBudgetSummary
     expenses : HomeExpenseSummary
     goal     : Optional[HomeGoalSummary]
@@ -266,7 +267,7 @@ async def get_home_route(
     current_user: dict = Depends(get_current_user),
 ) -> HomeResponse:
     user_id = current_user["id"]
-
+    user_name = current_user["display_name"]
     budget, expenses, goal = await asyncio.gather(
         _fetch_budget(user_id),
         _fetch_expenses(user_id),
@@ -281,4 +282,4 @@ async def get_home_route(
         f"active_goal={'yes' if goal else 'none'}"
     )
 
-    return HomeResponse(budget=budget, expenses=expenses, goal=goal)
+    return HomeResponse(user_name= user_name, budget=budget, expenses=expenses, goal=goal)

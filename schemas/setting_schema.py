@@ -13,7 +13,7 @@ MonthLiteral = Literal[
 
 
 def _empty_month_entry() -> dict:
-    return {"monthly_budget": 0.0, "daily_limit": 0.0}
+    return {"monthly_budget": 0.0,"weekly_budget":0.0, "daily_limit": 0.0}
 
 
 # ── Shared sub-schema ──────────────────────────────────────────────────────────

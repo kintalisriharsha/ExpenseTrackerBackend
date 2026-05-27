@@ -34,7 +34,7 @@ def _default_budget_data() -> dict:
     month_str = _MONTHS[today.month - 1]
     return {
         year_str: {
-            month_str: {"monthly_budget": 0.0, "daily_limit": 0.0}
+            month_str: {"monthly_budget": 0.0,"weekly_budget":0.0, "daily_limit": 0.0}
         }
     }
 
@@ -71,6 +71,7 @@ class User(Base):
     # Denormalised budget columns — kept in sync by setting_crud._sync_to_user()
     # and also embedded in the JWT so every request has them without a DB hit.
     daily_budget   = Column(Numeric(12, 2), nullable=False, default=0.0)
+    weekly_budget = Column(Numeric(12, 2), nullable=False, default=0.0, server_default="0.0")
     monthly_budget = Column(Numeric(12, 2), nullable=False, default=0.0)
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

@@ -33,20 +33,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db import get_db
 from auth.auth import get_current_user
 from schemas.budget_schema import (
-    SetWeeklyBudgetRequest,
+    # SetWeeklyBudgetRequest,
     AddTaskRequest,
     UpdateTaskRequest,
     RolloverRequest,
     ActiveWeekResponse,
     TaskResponse,
     DeleteTaskResponse,
-    WeeklyBudgetResponse,
+    # WeeklyBudgetResponse,
     HistoryListResponse,
     RolloverResponse,
 )
 from crud.budget_crud import (
     get_active_week,
-    set_weekly_budget,
+    # set_weekly_budget,
     add_task,
     update_task,
     delete_task,
@@ -113,41 +113,41 @@ async def get_active_week_route(
 
 # ── PATCH weekly budget ────────────────────────────────────────────────────────
 
-@router.patch(
-    "/active/budget",
-    response_model=WeeklyBudgetResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Set or update the weekly budget cap — called from WeeklyBudgetDialog",
-    description="""
-Called when the user confirms the **WeeklyBudgetDialog** (taps "Confirm").
+# @router.patch(
+#     "/active/budget",
+#     response_model=WeeklyBudgetResponse,
+#     status_code=status.HTTP_200_OK,
+#     summary="Set or update the weekly budget cap — called from WeeklyBudgetDialog",
+#     description="""
+# Called when the user confirms the **WeeklyBudgetDialog** (taps "Confirm").
 
-Sets the `weekly_budget` cap for the current active week.
-Can be called again any time to edit the cap — maps to the "Edit" button
-on the WeeklyBudgetCard.
+# Sets the `weekly_budget` cap for the current active week.
+# Can be called again any time to edit the cap — maps to the "Edit" button
+# on the WeeklyBudgetCard.
 
-Returns updated totals so Android can refresh the progress bar immediately.
+# Returns updated totals so Android can refresh the progress bar immediately.
 
-Example request:
-```json
-{ "weekly_budget": 5000.0 }
-```
+# Example request:
+# ```json
+# { "weekly_budget": 5000.0 }
+# ```
 
-Example response:
-```json
-{
-    "weekly_budget": 5000.0,
-    "total_spent": 950.0,
-    "weekly_exceeded": false
-}
-```
-""",
-)
-async def set_weekly_budget_route(
-    payload      : SetWeeklyBudgetRequest,
-    db           : AsyncSession = Depends(get_db),
-    current_user : dict         = Depends(get_current_user),
-):
-    return await set_weekly_budget(db, current_user["id"], payload.weekly_budget)
+# Example response:
+# ```json
+# {
+#     "weekly_budget": 5000.0,
+#     "total_spent": 950.0,
+#     "weekly_exceeded": false
+# }
+# ```
+# """,
+# )
+# async def set_weekly_budget_route(
+#     payload      : SetWeeklyBudgetRequest,
+#     db           : AsyncSession = Depends(get_db),
+#     current_user : dict         = Depends(get_current_user),
+# ):
+#     return await set_weekly_budget(db, current_user["id"], payload.weekly_budget)
 
 
 # ── POST add task ──────────────────────────────────────────────────────────────
