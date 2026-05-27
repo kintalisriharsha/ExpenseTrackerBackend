@@ -82,6 +82,7 @@ async def init_settings_route(
         year                       = int(year_str),
         month                      = month_str,
         monthly_budget             = entry["monthly_budget"],
+        weekly_budget              = entry["weekly_budget"], 
         daily_limit                = entry["daily_limit"],
         notification_enabled       = settings.notification_enabled,
         is_dark_mode               = settings.is_dark_mode,
@@ -130,6 +131,7 @@ async def get_current_month_route(
         year                       = int(year_str),
         month                      = month_str,
         monthly_budget             = entry["monthly_budget"],
+        weekly_budget              = entry["weekly_budget"], 
         daily_limit                = entry["daily_limit"],
         notification_enabled       = settings.notification_enabled,
         is_dark_mode               = settings.is_dark_mode,
@@ -173,6 +175,7 @@ async def get_year_route(
         months = {
             m: MonthEntry(
                 monthly_budget = months_raw[m]["monthly_budget"],
+                weekly_budget  = months_raw[m]["weekly_budget"], 
                 daily_limit    = months_raw[m]["daily_limit"],
             )
             for m in MONTHS
@@ -231,6 +234,7 @@ async def update_settings_route(
         year                       = int(year_str),
         month                      = month_str,
         monthly_budget             = entry["monthly_budget"],
+        weekly_budget              = entry["weekly_budget"], 
         daily_limit                = entry["daily_limit"],
         notification_enabled       = settings.notification_enabled,
         is_dark_mode               = settings.is_dark_mode,
