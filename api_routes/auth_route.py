@@ -40,7 +40,7 @@ from schemas.auth_schema import (
     MessageResponse,
 )
 
-from cache import cache_delete, home_key, settings_key
+# from cache import cache_delete, home_key, settings_key
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,7 @@ async def logout(
         )
 
     await blacklist_token(db, jti, current_user["id"], expires_at)
-    await cache_delete(home_key(current_user["id"]), settings_key(current_user["id"]))
+    # await cache_delete(home_key(current_user["id"]), settings_key(current_user["id"]))
     logger.warning(f"User logged out: id={current_user['id']}")
     return LogoutResponse()
 
