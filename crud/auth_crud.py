@@ -9,7 +9,7 @@ from models.user_model import User, BlacklistedToken, AuthProvider
 
 logger = logging.getLogger(__name__)
 
-OTP_TTL_MINUTES     = 10
+OTP_TTL_MINUTES     = 6
 OTP_RESEND_COOLDOWN = 60   # seconds — must wait before requesting another OTP
 OTP_MAX_ATTEMPTS    = 5    # wrong guesses before the OTP is invalidated
 
