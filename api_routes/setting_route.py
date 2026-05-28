@@ -39,7 +39,7 @@ from crud.setting_crud import (
 
 from datetime import date
 from schemas.setting_schema import MONTHS
-
+from cache import cache_get, cache_set, cache_delete, settings_key, SETTINGS_TTL
 router = APIRouter(prefix="/setting", tags=["setting"])
 
 
@@ -125,19 +125,31 @@ async def get_current_month_route(
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    year_str, month_str, entry = await get_current_month(db, current_user["id"])
-    settings = await get_settings_or_404(db, current_user["id"])
-    return SettingsResponse(
+    user_id = current_user["id"]
+
+    # Cache read
+    cached = await cache_get(settings_key(user_id))
+    if cached:
+        return SettingsResponse(**cached)
+
+    # DB fetch — unchanged
+    year_str, month_str, entry = await get_current_month(db, user_id)
+    settings = await get_settings_or_404(db, user_id)
+
+    # Build + cache + return
+    response = SettingsResponse(
         year                       = int(year_str),
         month                      = month_str,
         monthly_budget             = entry["monthly_budget"],
-        weekly_budget              = entry["weekly_budget"], 
+        weekly_budget              = entry["weekly_budget"],
         daily_limit                = entry["daily_limit"],
         notification_enabled       = settings.notification_enabled,
         is_dark_mode               = settings.is_dark_mode,
         user_monthly_budget_synced = float(current_user.get("monthly_budget", 0.0)),
         user_daily_limit_synced    = float(current_user.get("daily_budget",   0.0)),
     )
+    await cache_set(settings_key(user_id), response.model_dump(), SETTINGS_TTL)
+    return response
 
 
 @router.get(
@@ -230,6 +242,7 @@ async def update_settings_route(
     settings, year_str, month_str, entry = await update_settings(
         db, current_user["id"], payload
     )
+    await cache_delete(settings_key(current_user["id"]))  # ← add this
     return SettingsResponse(
         year                       = int(year_str),
         month                      = month_str,

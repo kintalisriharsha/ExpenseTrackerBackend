@@ -14,3 +14,4 @@ google-auth-oauthlib
 requests
 aiosmtplib
 asyncio
+redis[asyncio]
