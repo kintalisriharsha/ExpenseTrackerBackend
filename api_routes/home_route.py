@@ -27,7 +27,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, status, Header
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
 from sqlalchemy import cast, case, select
 from sqlalchemy import Date as SADate
@@ -39,7 +39,6 @@ from models.budget_model import BudgetActive
 from models.expense_model import Expense
 from models.goal_model import Goal
 from models.setting_model import Settings
-from cache import cache_get, cache_set, home_key, HOME_TTL
 
 logger = logging.getLogger(__name__)
 
@@ -266,25 +265,21 @@ async def _fetch_goal(user_id: int) -> Optional[HomeGoalSummary]:
 )
 async def get_home_route(
     current_user: dict = Depends(get_current_user),
-    x_force_refresh: bool = Header(default=False),
 ) -> HomeResponse:
-    user_id   = current_user["id"]
+    user_id = current_user["id"]
     user_name = current_user["display_name"]
-
-    # Cache read — skip if force refresh requested
-    if not x_force_refresh:
-        cached = await cache_get(home_key(user_id))
-        if cached:
-            return HomeResponse(**cached)
-
-    # DB fetch — unchanged
     budget, expenses, goal = await asyncio.gather(
         _fetch_budget(user_id),
         _fetch_expenses(user_id),
         _fetch_goal(user_id),
     )
 
-    # Cache write + return
-    response = HomeResponse(user_name=user_name, budget=budget, expenses=expenses, goal=goal)
-    await cache_set(home_key(user_id), response.model_dump(), HOME_TTL)
-    return response
+    logger.info(
+        f"Home loaded: user_id={user_id} "
+        f"spent_today={expenses.spent_today} "
+        f"weekly_budget={budget.weekly_budget} "
+        f"daily_limit={budget.daily_limit} "
+        f"active_goal={'yes' if goal else 'none'}"
+    )
+
+    return HomeResponse(user_name= user_name, budget=budget, expenses=expenses, goal=goal)
