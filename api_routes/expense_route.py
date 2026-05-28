@@ -34,7 +34,7 @@ from crud.expense_crud import (
     edit_expense,
     delete_expense,
 )
-from cache import cache_delete, home_key
+# from cache import cache_delete, home_key
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
@@ -91,7 +91,7 @@ async def add_expense_route(
     current_user : dict         = Depends(get_current_user),
 ):
     result = await add_expense(db, current_user["id"], payload)  # DB write first
-    await cache_delete(home_key(current_user["id"]))              # then invalidate
+    # await cache_delete(home_key(current_user["id"]))              # then invalidate
     return result
 
 
@@ -279,7 +279,7 @@ async def edit_expense_route(
     current_user : dict         = Depends(get_current_user),
 ):
     result = await edit_expense(db, current_user["id"], expense_id, payload)
-    await cache_delete(home_key(current_user["id"]))
+    # await cache_delete(home_key(current_user["id"]))
     return result
 
 
@@ -309,5 +309,5 @@ async def delete_expense_route(
     current_user : dict         = Depends(get_current_user),
 ):
     await delete_expense(db, current_user["id"], expense_id)
-    await cache_delete(home_key(current_user["id"]))
+    # await cache_delete(home_key(current_user["id"]))
     return {"message": "Expense deleted successfully", "deleted_id": expense_id}
