@@ -13,7 +13,7 @@ from api_routes.expense_route import router as expense_router
 from api_routes.goal_route import router as goal_router
 from api_routes.budget_route import router as budget_router
 from api_routes.home_route import router as home_router
-# from api_routes.analytics_route import router as analytics_router
+from api_routes.analytics_route import router as analytics_router
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -82,7 +82,7 @@ app.include_router(goal_router)
 
 app.include_router(budget_router)
 
-# app.include_router(analytics_router)
+app.include_router(analytics_router)
 # ── Root ───────────────────────────────────────────────────────────────────────
 
 @app.get("/")
