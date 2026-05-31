@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status,Header
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from datetime import datetime, timezone, timedelta
@@ -92,3 +92,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         "monthly_budget": float(payload.get("monthly_budget", 0.0)),
         "created_at":     payload.get("created_at"),
     }
+
+async def verify_cron_secret(x_cron_secret: str = Header(...)):
+    secret = os.getenv("CRON_SECRET")
+    if not secret or x_cron_secret != secret:
+        raise HTTPException(
+            status_code = 403,
+            detail      = "Forbidden"
+        )
