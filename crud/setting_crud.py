@@ -47,6 +47,8 @@ from schemas.setting_schema import (
     _empty_month_entry,
 )
 
+from sqlalchemy import select
+
 logger = logging.getLogger(__name__)
 
 
@@ -390,3 +392,29 @@ async def carry_forward_month(
         "user_monthly_budget_synced": values_now.get("monthly_budget") if action != "already_set" else None,
         "user_daily_limit_synced"   : values_now.get("daily_limit")    if action != "already_set" else None,
     }
+
+async def carry_forward_all_users(
+    db       : AsyncSession,
+    overwrite: bool = False
+) -> dict:
+    
+    result   = await db.execute(select(Settings.user_id))
+    user_ids = result.scalars().all()
+
+    results = []
+    for user_id in user_ids:
+        try:
+            r = await carry_forward_month(db, user_id, overwrite)
+            results.append({
+                "user_id": user_id,
+                "status" : "ok",
+                "action" : r["action"]
+            })
+        except Exception as e:
+            results.append({
+                "user_id": user_id,
+                "status" : "error",
+                "detail" : str(e)
+            })
+
+    return {"processed": len(user_ids), "results": results}

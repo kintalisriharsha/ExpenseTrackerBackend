@@ -1,10 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI,Depends, Header
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 import logging
 import uvicorn
 import os
-
 from api_routes.auth_route      import router as auth_router
 from api_routes.setting_route   import router as setting_router
 from api_routes.expense_route   import router as expense_router
@@ -13,6 +12,11 @@ from api_routes.budget_route    import router as budget_router
 from api_routes.home_route      import router as home_router
 from api_routes.analytics_route import router as analytics_router
 from db import create_tables, warmup_connection_pool, close_db, check_db_health
+from sqlalchemy.ext.asyncio import AsyncSession
+from db import get_db
+from auth.auth import verify_cron_secret
+from crud.setting_crud import carry_forward_all_users
+from crud.budget_crud  import rollover_all_users
 
 logging.basicConfig(
     level  = logging.WARNING,
@@ -76,6 +80,24 @@ async def root():
 async def health():
     db_health = await check_db_health()
     return {"api": "healthy", "database": db_health}
+
+
+@app.post("/cron/carry-forward-all", tags=["cron"])
+async def cron_carry_forward(
+    db : AsyncSession = Depends(get_db),
+    _  : None         = Depends(verify_cron_secret),
+):
+    """Called by Cloud Scheduler on 1st of every month at midnight IST."""
+    return await carry_forward_all_users(db)
+
+
+@app.post("/cron/rollover-all", tags=["cron"])
+async def cron_rollover(
+    db : AsyncSession = Depends(get_db),
+    _  : None         = Depends(verify_cron_secret),
+):
+    """Called by Cloud Scheduler every Monday at midnight IST."""
+    return await rollover_all_users(db, carry_forward_budget=True)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

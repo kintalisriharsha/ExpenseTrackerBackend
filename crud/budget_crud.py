@@ -528,3 +528,29 @@ async def get_history(
     ]
 
     return HistoryListResponse(total=total, weeks=weeks)
+
+async def rollover_all_users(
+    db                   : AsyncSession,
+    carry_forward_budget : bool = True
+) -> dict:
+    from sqlalchemy import select
+    result   = await db.execute(select(BudgetActive.user_id))
+    user_ids = result.scalars().all()
+
+    results = []
+    for user_id in user_ids:
+        try:
+            r = await rollover_week(db, user_id, carry_forward_budget)
+            results.append({
+                "user_id": user_id,
+                "status" : "ok",
+                "action" : r["action"]
+            })
+        except Exception as e:
+            results.append({
+                "user_id": user_id,
+                "status" : "error",
+                "detail" : str(e)
+            })
+
+    return {"processed": len(user_ids), "results": results}
