@@ -34,6 +34,9 @@ from crud.expense_crud import (
     edit_expense,
     delete_expense,
 )
+from crud.budget_crud import{
+    get_history
+}
 # from cache import cache_delete, home_key
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
