@@ -174,63 +174,6 @@ async def get_today_expenses_route(
     total, expenses = await get_today_expenses(db, current_user["id"])
     return ExpenseListResponse(total=total, expenses=expenses)
 
-
-# ── Search expenses ────────────────────────────────────────────────────────────
-
-@router.get(
-    "/search",
-    response_model=ExpenseListResponse,
-    summary="Search expenses by keyword or category",
-    description=f"""
-Triggered from the **search icon** in `HistoryScreen.kt` (opens `SearchDialog`).
-
-Query parameters:
-- `q`        — case-insensitive substring match on **notes**, **contact_name**, or **category**
-- `category` — exact category filter. Allowed values: `{sorted(VALID_CATEGORIES)}`
-- `limit`    — default 50 (same as GET /expenses)
-- `offset`   — for pagination
-
-Both `q` and `category` are optional and can be combined.
-
-Example — search notes for "lunch":
-```
-GET /expenses/search?q=lunch
-```
-
-Example — all Food expenses:
-```
-GET /expenses/search?category=Food
-```
-
-Example — food + keyword:
-```
-GET /expenses/search?q=saravana&category=Food
-```
-
-Example response:
-```json
-{{
-    "total": 4,
-    "expenses": [ {{ ... }}, ... ]
-}}
-```
-""",
-)
-async def search_expenses_route(
-    q            : Optional[str] = Query(None, description="Keyword to search in notes / contact / category"),
-    category     : Optional[str] = Query(None, description="Exact category filter"),
-    limit        : int           = Query(50, ge=1, le=200),
-    offset       : int           = Query(0,  ge=0),
-    db           : AsyncSession  = Depends(get_db),
-    current_user : dict          = Depends(get_current_user),
-):
-    total, expenses = await search_expenses(
-        db, current_user["id"], query=q, category=category,
-        limit=limit, offset=offset,
-    )
-    return ExpenseListResponse(total=total, expenses=expenses)
-
-
 # ── Edit expense ───────────────────────────────────────────────────────────────
 
 @router.patch(
