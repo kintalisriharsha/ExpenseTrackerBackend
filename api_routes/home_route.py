@@ -290,24 +290,13 @@ home_route.py
 ─────────────
 Single aggregated endpoint powering HomeScreen.kt.
 
-CACHING STRATEGY
-────────────────
-The home endpoint runs asyncio.gather with 3 separate DB sessions on every
-call — Settings+BudgetActive, today's Expenses, and top Goal. Caching the
-final HomeResponse gives the biggest single win in the entire project.
-
-TTL = 5 minutes. Invalidated immediately on:
-  - Any expense add / edit / delete  (bust from expense_route.py)
-  - Budget planner task mutations     (bust from budget_route.py)
-  - Settings save                     (bust from setting_route.py)
-  - Logout                            (bust from auth_route.py)
-
-STALE DATA RISK
-───────────────
-If a user adds an expense and immediately pulls to refresh, they might see
-the old total for up to 5 minutes — BUT only if they hit a cached response.
-Since we bust the cache on every expense mutation this only happens if the
-bust itself failed (Redis was down at that exact moment), which is acceptable.
+HomeResponse now contains 4 sections:
+  budget   → Settings limits (daily_limit, weekly_budget, monthly_budget)
+  expenses → today's expenses
+  goal     → top active savings goal
+  planner  → BudgetActive (task-based weekly planner totals + days)
+             This is DISTINCT from budget — planner tracks planned tasks,
+             budget tracks the user's personal spending limits.
 """
 
 from __future__ import annotations
@@ -322,15 +311,20 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlalchemy import cast, case, select
 from sqlalchemy import Date as SADate
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.auth import get_current_user
-from db import get_db, AsyncSessionLocal
+from db import AsyncSessionLocal
 from models.budget_model import BudgetActive
 from models.expense_model import Expense
 from models.goal_model import Goal
 from models.setting_model import Settings
 from cache import cache_get, cache_set, home_key, TTL_HOME
+from crud.budget_crud import (
+    _get_active_or_create,
+    _get_weekly_budget_from_settings,
+    _build_active_response,
+)
+from schemas.budget_schema import ActiveWeekResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/home", tags=["home"])
@@ -340,10 +334,11 @@ MONTHS = ["jan", "feb", "mar", "apr", "may", "jun",
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Response schemas  (unchanged from original)
+# Response schemas
 # ══════════════════════════════════════════════════════════════════════════════
 
 class HomeBudgetSummary(BaseModel):
+    """Personal budget limits from Settings — for alerts/tracking."""
     weekly_budget   : float
     daily_limit     : float
     monthly_budget  : float
@@ -379,13 +374,14 @@ class HomeGoalSummary(BaseModel):
 
 class HomeResponse(BaseModel):
     user_name : str
-    budget    : HomeBudgetSummary
-    expenses  : HomeExpenseSummary
+    budget    : HomeBudgetSummary       # Settings limits
+    expenses  : HomeExpenseSummary      # today's expenses
     goal      : Optional[HomeGoalSummary]
+    planner   : Optional[ActiveWeekResponse]  # Budget planner active week
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Private helpers  (unchanged)
+# Private helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _week_end(week_start: date) -> date:
@@ -407,10 +403,11 @@ def _get_current_month_entry(budget_data: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Data fetchers  (unchanged — each opens its own session for asyncio.gather)
+# Data fetchers — each opens its own session for asyncio.gather
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _fetch_budget(user_id: int) -> HomeBudgetSummary:
+    """Settings limits + BudgetActive total_spent."""
     async with AsyncSessionLocal() as db:
         settings_result = await db.execute(
             select(Settings).where(Settings.user_id == user_id)
@@ -481,7 +478,7 @@ async def _fetch_goal(user_id: int) -> Optional[HomeGoalSummary]:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Goal)
-            .where(Goal.user_id == user_id, Goal.is_completed == False)   # noqa: E712
+            .where(Goal.user_id == user_id, Goal.is_completed == False)  # noqa: E712
             .order_by(completion_ratio.desc())
             .limit(1)
         )
@@ -498,6 +495,18 @@ async def _fetch_goal(user_id: int) -> Optional[HomeGoalSummary]:
     )
 
 
+async def _fetch_planner(user_id: int) -> Optional[ActiveWeekResponse]:
+    """
+    Budget planner active week — task-based, completely separate from
+    Settings budget limits. Returns None if user has no planner row yet.
+    """
+    async with AsyncSessionLocal() as db:
+        active        = await _get_active_or_create(db, user_id)
+        weekly_budget = await _get_weekly_budget_from_settings(db, user_id)
+        await db.commit()   # flush the auto-create if it happened
+        return _build_active_response(active, weekly_budget)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Endpoint
 # ══════════════════════════════════════════════════════════════════════════════
@@ -506,7 +515,7 @@ async def _fetch_goal(user_id: int) -> Optional[HomeGoalSummary]:
     "",
     response_model=HomeResponse,
     status_code=status.HTTP_200_OK,
-    summary="Home screen — budget limits from Settings, live totals from BudgetActive",
+    summary="Home screen — Settings limits, today's expenses, goal, and planner",
 )
 async def get_home_route(
     current_user: dict = Depends(get_current_user),
@@ -521,25 +530,28 @@ async def get_home_route(
         logger.info(f"Home cache HIT: user_id={user_id}")
         return cached
 
-    # ── Cache miss → 3 concurrent DB sessions ─────────────────────────
-    budget, expenses, goal = await asyncio.gather(
+    # ── Cache miss → 4 concurrent fetches ─────────────────────────────
+    budget, expenses, goal, planner = await asyncio.gather(
         _fetch_budget(user_id),
         _fetch_expenses(user_id),
         _fetch_goal(user_id),
+        _fetch_planner(user_id),
     )
 
     response = HomeResponse(
-        user_name=user_name, budget=budget, expenses=expenses, goal=goal
+        user_name=user_name,
+        budget=budget,
+        expenses=expenses,
+        goal=goal,
+        planner=planner,
     )
 
-    # ── Cache write (silent if Redis down) ─────────────────────────────
+    # ── Cache write ────────────────────────────────────────────────────
     await cache_set(key, jsonable_encoder(response), TTL_HOME)
 
     logger.info(
         f"Home loaded: user_id={user_id} "
         f"spent_today={expenses.spent_today} "
-        f"weekly_budget={budget.weekly_budget} "
-        f"daily_limit={budget.daily_limit} "
-        f"active_goal={'yes' if goal else 'none'}"
+        f"planner_total={planner.total_spent if planner else 0}"
     )
     return response
