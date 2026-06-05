@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
+from crud.budget_crud import get_history
 from db import get_db
 from auth.auth import get_current_user
 from schemas.expense_schema import (
@@ -34,7 +35,8 @@ from crud.expense_crud import (
     edit_expense,
     delete_expense,
 )
-# from cache import cache_delete, home_key
+from typing import Literal, Optional, Union
+from cache import cache_delete, home_key
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
@@ -91,7 +93,7 @@ async def add_expense_route(
     current_user : dict         = Depends(get_current_user),
 ):
     result = await add_expense(db, current_user["id"], payload)  # DB write first
-    # await cache_delete(home_key(current_user["id"]))              # then invalidate
+    await cache_delete(home_key(current_user["id"]))              # then invalidate
     return result
 
 
@@ -279,7 +281,7 @@ async def edit_expense_route(
     current_user : dict         = Depends(get_current_user),
 ):
     result = await edit_expense(db, current_user["id"], expense_id, payload)
-    # await cache_delete(home_key(current_user["id"]))
+    await cache_delete(home_key(current_user["id"]))
     return result
 
 
@@ -309,5 +311,115 @@ async def delete_expense_route(
     current_user : dict         = Depends(get_current_user),
 ):
     await delete_expense(db, current_user["id"], expense_id)
-    # await cache_delete(home_key(current_user["id"]))
+    await cache_delete(home_key(current_user["id"]))
     return {"message": "Expense deleted successfully", "deleted_id": expense_id}
+
+
+@router.get(
+    "/search",
+    summary="Unified history search — routes by tab name",
+    description=f"""
+Called by `SearchDialog` in `HistoryScreen.kt` when the user submits a search.
+ 
+The `tab` parameter tells the server which dataset to search:
+ 
+**tab=expenses**
+- Searches `notes`, `contact_name`, and `category` (case-insensitive substring).
+- Optional `category` filter restricts to an exact category.
+- Allowed categories: `{sorted(VALID_CATEGORIES)}`
+- Returns `ExpenseListResponse` shape.
+ 
+**tab=budget**
+- Searches task names inside archived week `tasks_data` JSON.
+- Also matches on week date range strings (e.g. "May 2026").
+- Returns `HistoryListResponse` shape.
+ 
+Both responses include a `total` count for pagination labels.
+ 
+Examples:
+```
+GET /history/search?tab=expenses&q=lunch
+GET /history/search?tab=expenses&q=saravana&category=Food
+GET /history/search?tab=budget&q=groceries
+GET /history/search?tab=budget&q=2026-05
+```
+""",
+    # FastAPI can't declare a true discriminated union as response_model,
+    # so we leave it as the default (dict) and document shapes above.
+    status_code=status.HTTP_200_OK,
+)
+async def unified_search(
+    tab          : Literal["expenses", "budget"] = Query(
+                       ...,
+                       description="Which history tab is active: 'expenses' or 'budget'",
+                   ),
+    q            : Optional[str] = Query(None,  description="Free-text keyword to search"),
+    category     : Optional[str] = Query(None,  description="Expense category filter (expenses tab only)"),
+    limit        : int           = Query(50,  ge=1, le=200, description="Max results (default 50)"),
+    offset       : int           = Query(0,   ge=0,         description="Rows to skip for pagination"),
+    db           : AsyncSession  = Depends(get_db),
+    current_user : dict          = Depends(get_current_user),
+) -> dict:
+ 
+    user_id = current_user["id"]
+ 
+    # ── Expenses tab ───────────────────────────────────────────────────────────
+    if tab == "expenses":
+        total, expenses = await search_expenses(
+            db,
+            user_id,
+            query    = q,
+            category = category,
+            limit    = limit,
+            offset   = offset,
+        )
+        return {
+            "tab"      : "expenses",
+            "total"    : total,
+            "expenses" : [e.model_dump() for e in expenses],
+        }
+ 
+    # ── Budget tab ─────────────────────────────────────────────────────────────
+    # Fetch all history rows for the user (up to limit+offset for pagination),
+    # then filter in Python by task name or week date string.
+    # Budget history is at most ~52 rows/year so in-Python scan is fine.
+    else:
+        # Pull enough rows to apply the search filter with pagination.
+        # We fetch a generous ceiling (max 52 weeks = 1 year) then slice.
+        result = await get_history(db, user_id, limit=52, offset=0)
+        all_weeks = result.weeks
+ 
+        if q:
+            keyword = q.strip().lower()
+            filtered = []
+            for week in all_weeks:
+                # Match on week date strings
+                if (
+                    keyword in str(week.week_start).lower()
+                    or keyword in str(week.week_end).lower()
+                ):
+                    filtered.append(week)
+                    continue
+ 
+                # Match on any task name inside tasks_data
+                matched = False
+                for day_tasks in week.tasks_data.values():
+                    for task in day_tasks:
+                        if keyword in task.get("name", "").lower():
+                            matched = True
+                            break
+                    if matched:
+                        break
+                if matched:
+                    filtered.append(week)
+        else:
+            filtered = all_weeks
+ 
+        total         = len(filtered)
+        paged         = filtered[offset : offset + limit]
+ 
+        return {
+            "tab"   : "budget",
+            "total" : total,
+            "weeks" : [w.model_dump() for w in paged],
+        }

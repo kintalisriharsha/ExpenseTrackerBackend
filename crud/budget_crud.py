@@ -494,23 +494,37 @@ async def get_history(
 ) -> HistoryListResponse:
     """
     Return past weeks for the BudgetHistory tab. Newest week first.
-    weekly_budget in history rows is the snapshot taken at rollover time.
+
+    The current active week is always prepended as a live "in progress" entry
+    (id=-1) so users can see this week without waiting for Monday's rollover.
+    It is injected before pagination, so:
+      - offset=0  → active week is item[0], then up to (limit-1) archived rows
+      - offset≥1  → active week is excluded (it's already been scrolled past)
+
+    weekly_budget in archived history rows is the snapshot taken at rollover time.
+    The live active entry uses the current Settings value.
     """
+    # ── Archived rows ─────────────────────────────────────────────────────────
     count_result = await db.execute(
         select(func.count()).where(BudgetHistory.user_id == user_id)
     )
-    total = count_result.scalar_one()
+    archived_total = count_result.scalar_one()
+
+    # Adjust limit/offset for archived rows when the active week is prepended.
+    # On page 0 the active entry occupies one slot, so we fetch limit-1 archived rows.
+    archived_limit  = max(limit - 1, 0) if offset == 0 else limit
+    archived_offset = max(offset - 1, 0) if offset > 0  else 0
 
     result = await db.execute(
         select(BudgetHistory)
         .where(BudgetHistory.user_id == user_id)
         .order_by(BudgetHistory.week_start.desc())
-        .limit(limit)
-        .offset(offset)
+        .limit(archived_limit)
+        .offset(archived_offset)
     )
     rows = result.scalars().all()
 
-    weeks = [
+    archived_weeks = [
         HistoryWeekSummary(
             id            = row.id,
             week_start    = row.week_start,
@@ -526,6 +540,32 @@ async def get_history(
         )
         for row in rows
     ]
+
+    # ── Active week (live, always first on page 0) ────────────────────────────
+    # budget_active.week_start is always the current Monday after rollover,
+    # so it can never clash with any budget_history row (which hold past weeks).
+    # No duplicate check needed — they are always different weeks.
+    weeks  = archived_weeks
+    active = await _get_active(db, user_id)
+
+    if active is not None and offset == 0:
+        weekly_budget = await _get_weekly_budget_from_settings(db, user_id)
+        monday        = active.week_start
+        spent         = float(active.total_spent)
+        active_entry  = HistoryWeekSummary(
+            id            = -1,               # sentinel — not a real DB row
+            week_start    = monday,
+            week_end      = _sunday_of(monday),
+            weekly_budget = weekly_budget,
+            total_spent   = spent,
+            within_budget = weekly_budget == 0.0 or spent <= weekly_budget,
+            tasks_data    = active.tasks_data,
+            created_at    = active.updated_at,
+        )
+        weeks = [active_entry] + archived_weeks
+
+    # total: archived rows + 1 for the live active week
+    total = archived_total + (1 if active is not None else 0)
 
     return HistoryListResponse(total=total, weeks=weeks)
 

@@ -54,6 +54,8 @@ from crud.budget_crud import (
     get_history,
 )
 
+from cache import cache_delete, home_key
+
 router = APIRouter(prefix="/budget-planner", tags=["budget-planner"])
 
 
@@ -205,7 +207,10 @@ async def add_task_route(
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    return await add_task(db, current_user["id"], payload)
+    
+    result = await add_task(db, current_user["id"], payload)
+    await cache_delete(home_key(current_user["id"]))
+    return result
 
 
 # ── PATCH update task ──────────────────────────────────────────────────────────
@@ -264,7 +269,9 @@ async def update_task_route(
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    return await update_task(db, current_user["id"], task_id, payload)
+    result = await update_task(db, current_user["id"], task_id, payload)
+    await cache_delete(home_key(current_user["id"]))
+    return result
 
 
 # ── DELETE task ────────────────────────────────────────────────────────────────
@@ -299,7 +306,9 @@ async def delete_task_route(
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    return await delete_task(db, current_user["id"], task_id)
+    result = await delete_task(db, current_user["id"], task_id)
+    await cache_delete(home_key(current_user["id"]))
+    return result
 
 
 # ── POST rollover ──────────────────────────────────────────────────────────────

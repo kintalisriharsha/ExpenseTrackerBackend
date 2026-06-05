@@ -1,159 +1,338 @@
+# """
+# analytics_route.py
+# ──────────────────
+# All endpoints for the AnalyticsScreen.kt.
+
+# Endpoints
+# ─────────
+# GET /analytics/summary?month=1&year=2026   → combined one-shot response
+# GET /analytics/total?month=1&year=2026     → total spent card only
+# GET /analytics/categories?month=1&year=2026→ category donut chart
+# GET /analytics/trend?months=6              → monthly line chart
+# GET /analytics/heatmap?month=1&year=2026   → spending calendar heatmap
+# """
+
+# import logging
+# from datetime import date
+
+# from fastapi import APIRouter, Depends, Query
+# from sqlalchemy.ext.asyncio import AsyncSession
+
+# from auth.auth import get_current_user
+# from db import get_db
+# from crud.analytics_crud import (
+#     get_analytics_summary,
+#     get_category_breakdown,
+#     get_heatmap,
+#     get_monthly_trend,
+#     get_summary,
+# )
+# from schemas.analytics_schema import (
+#     AnalyticsSummaryResponse,
+#     CategoryBreakdownResponse,
+#     HeatmapResponse,
+#     MonthlyTrendResponse,
+#     TotalSpentResponse,
+# )
+
+# logger = logging.getLogger(__name__)
+# router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# # Endpoint 1 — Combined summary
+# # ══════════════════════════════════════════════════════════════════════════════
+
+# @router.get(
+#     "/summary",
+#     response_model=AnalyticsSummaryResponse,
+#     summary="All analytics in one call — powers the full AnalyticsScreen",
+#     description="""
+# Returns all four analytics sections in a single response so
+# AnalyticsScreen.kt can load everything in one network call.
+
+# - `month` defaults to the current month (1–12)
+# - `year`  defaults to the current year
+# - `trend_months` controls how many months the line chart shows (default 6)
+# """,
+# )
+# async def get_summary_route(
+#     month        : int          = Query(default=None, ge=1, le=12, description="Month 1–12 (default: current month)"),
+#     year         : int          = Query(default=None, ge=2020,     description="Year (default: current year)"),
+#     trend_months : int          = Query(default=6,    ge=3, le=12,  description="How many months for the trend line"),
+#     db           : AsyncSession = Depends(get_db),
+#     current_user : dict         = Depends(get_current_user),
+# ):
+#     today   = date.today()
+#     month   = month or today.month
+#     year    = year  or today.year
+#     user_id = current_user["id"]
+
+#     return await get_analytics_summary(db, user_id, month, year, trend_months)
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# # Endpoint 2 — Total spent card only
+# # ══════════════════════════════════════════════════════════════════════════════
+
+# @router.get(
+#     "/total",
+#     response_model=TotalSpentResponse,
+#     summary="Total spent + budget for the month — TotalSpentCard",
+# )
+# async def get_total_route(
+#     month        : int          = Query(default=None, ge=1, le=12),
+#     year         : int          = Query(default=None, ge=2020),
+#     db           : AsyncSession = Depends(get_db),
+#     current_user : dict         = Depends(get_current_user),
+# ):
+#     today   = date.today()
+#     month   = month or today.month
+#     year    = year  or today.year
+#     user_id = current_user["id"]
+
+#     return await get_summary(db, user_id, month, year)
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# # Endpoint 3 — Category breakdown
+# # ══════════════════════════════════════════════════════════════════════════════
+
+# @router.get(
+#     "/categories",
+#     response_model=CategoryBreakdownResponse,
+#     summary="Category breakdown — donut chart",
+# )
+# async def get_categories_route(
+#     month        : int          = Query(default=None, ge=1, le=12),
+#     year         : int          = Query(default=None, ge=2020),
+#     db           : AsyncSession = Depends(get_db),
+#     current_user : dict         = Depends(get_current_user),
+# ):
+#     today   = date.today()
+#     month   = month or today.month
+#     year    = year  or today.year
+#     user_id = current_user["id"]
+
+#     return await get_category_breakdown(db, user_id, month, year)
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# # Endpoint 4 — Monthly trend
+# # ══════════════════════════════════════════════════════════════════════════════
+
+# @router.get(
+#     "/trend",
+#     response_model=MonthlyTrendResponse,
+#     summary="Monthly spend trend — line chart (last N months)",
+# )
+# async def get_trend_route(
+#     months       : int          = Query(default=6, ge=3, le=12, description="Number of months to return"),
+#     db           : AsyncSession = Depends(get_db),
+#     current_user : dict         = Depends(get_current_user),
+# ):
+#     user_id = current_user["id"]
+
+#     return await get_monthly_trend(db, user_id, months)
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# # Endpoint 5 — Spending heatmap
+# # ══════════════════════════════════════════════════════════════════════════════
+
+# @router.get(
+#     "/heatmap",
+#     response_model=HeatmapResponse,
+#     summary="Daily spend heatmap — calendar view",
+# )
+# async def get_heatmap_route(
+#     month        : int          = Query(default=None, ge=1, le=12),
+#     year         : int          = Query(default=None, ge=2020),
+#     db           : AsyncSession = Depends(get_db),
+#     current_user : dict         = Depends(get_current_user),
+# ):
+#     today   = date.today()
+#     month   = month or today.month
+#     year    = year  or today.year
+#     user_id = current_user["id"]
+
+#     return await get_heatmap(db, user_id, month, year)
+
+
 """
 analytics_route.py
 ──────────────────
-All endpoints for the AnalyticsScreen.kt.
+All endpoints for AnalyticsScreen.kt.
 
-Endpoints
-─────────
-GET /analytics/summary?month=1&year=2026   → combined one-shot response
-GET /analytics/total?month=1&year=2026     → total spent card only
-GET /analytics/categories?month=1&year=2026→ category donut chart
-GET /analytics/trend?months=6              → monthly line chart
-GET /analytics/heatmap?month=1&year=2026   → spending calendar heatmap
+CACHING STRATEGY
+────────────────
+Every endpoint is cached separately by (user_id, month, year).
+This means:
+  - Switching months doesn't bust the current month's cache
+  - Each month is independently cached and expires independently
+  - cache_delete_all_analytics(user_id) busts all months at once
+    via Redis SCAN — called from expense_route on any mutation
+
+TTLs:
+  - /summary, /total, /categories, /heatmap → TTL_ANALYTICS (5 min)
+    These include today's data so they can't be too long.
+  - /trend → TTL_ANALYTICS_TREND (30 min)
+    Trend is a 6-month rolling view — only the current month tip changes.
+    Longer TTL is safe here.
 """
 
 import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.auth import get_current_user
 from db import get_db
 from crud.analytics_crud import (
-    get_analytics_summary,
-    get_category_breakdown,
-    get_heatmap,
-    get_monthly_trend,
-    get_summary,
+    get_analytics_summary, get_category_breakdown,
+    get_heatmap, get_monthly_trend, get_summary,
 )
 from schemas.analytics_schema import (
-    AnalyticsSummaryResponse,
-    CategoryBreakdownResponse,
-    HeatmapResponse,
-    MonthlyTrendResponse,
-    TotalSpentResponse,
+    AnalyticsSummaryResponse, CategoryBreakdownResponse,
+    HeatmapResponse, MonthlyTrendResponse, TotalSpentResponse,
+)
+from cache import (
+    cache_get, cache_set,
+    analytics_summary_key, analytics_total_key, analytics_categories_key,
+    analytics_trend_key, analytics_heatmap_key,
+    TTL_ANALYTICS, TTL_ANALYTICS_TREND,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
+def _today_defaults(month, year):
+    today = date.today()
+    return month or today.month, year or today.year
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Endpoint 1 — Combined summary
+# 1. Combined summary  (most important — powers full AnalyticsScreen)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get(
-    "/summary",
-    response_model=AnalyticsSummaryResponse,
-    summary="All analytics in one call — powers the full AnalyticsScreen",
-    description="""
-Returns all four analytics sections in a single response so
-AnalyticsScreen.kt can load everything in one network call.
-
-- `month` defaults to the current month (1–12)
-- `year`  defaults to the current year
-- `trend_months` controls how many months the line chart shows (default 6)
-""",
-)
+@router.get("/summary", response_model=AnalyticsSummaryResponse,
+            summary="All analytics in one call")
 async def get_summary_route(
-    month        : int          = Query(default=None, ge=1, le=12, description="Month 1–12 (default: current month)"),
-    year         : int          = Query(default=None, ge=2020,     description="Year (default: current year)"),
-    trend_months : int          = Query(default=6,    ge=3, le=12,  description="How many months for the trend line"),
+    month        : int          = Query(default=None, ge=1, le=12),
+    year         : int          = Query(default=None, ge=2020),
+    trend_months : int          = Query(default=6, ge=3, le=12),
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    today   = date.today()
-    month   = month or today.month
-    year    = year  or today.year
-    user_id = current_user["id"]
+    month, year = _today_defaults(month, year)
+    user_id     = current_user["id"]
+    key         = analytics_summary_key(user_id, month, year)
 
-    return await get_analytics_summary(db, user_id, month, year, trend_months)
+    cached = await cache_get(key)
+    if cached:
+        return cached
+
+    data = await get_analytics_summary(db, user_id, month, year, trend_months)
+    await cache_set(key, jsonable_encoder(data), TTL_ANALYTICS)
+    return data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Endpoint 2 — Total spent card only
+# 2. Total spent card
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get(
-    "/total",
-    response_model=TotalSpentResponse,
-    summary="Total spent + budget for the month — TotalSpentCard",
-)
+@router.get("/total", response_model=TotalSpentResponse,
+            summary="Total spent + budget for the month")
 async def get_total_route(
     month        : int          = Query(default=None, ge=1, le=12),
     year         : int          = Query(default=None, ge=2020),
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    today   = date.today()
-    month   = month or today.month
-    year    = year  or today.year
-    user_id = current_user["id"]
+    month, year = _today_defaults(month, year)
+    user_id     = current_user["id"]
+    key         = analytics_total_key(user_id, month, year)
 
-    return await get_summary(db, user_id, month, year)
+    cached = await cache_get(key)
+    if cached:
+        return cached
+
+    data = await get_summary(db, user_id, month, year)
+    await cache_set(key, jsonable_encoder(data), TTL_ANALYTICS)
+    return data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Endpoint 3 — Category breakdown
+# 3. Category breakdown
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get(
-    "/categories",
-    response_model=CategoryBreakdownResponse,
-    summary="Category breakdown — donut chart",
-)
+@router.get("/categories", response_model=CategoryBreakdownResponse,
+            summary="Category breakdown — donut chart")
 async def get_categories_route(
     month        : int          = Query(default=None, ge=1, le=12),
     year         : int          = Query(default=None, ge=2020),
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    today   = date.today()
-    month   = month or today.month
-    year    = year  or today.year
-    user_id = current_user["id"]
+    month, year = _today_defaults(month, year)
+    user_id     = current_user["id"]
+    key         = analytics_categories_key(user_id, month, year)
 
-    return await get_category_breakdown(db, user_id, month, year)
+    cached = await cache_get(key)
+    if cached:
+        return cached
+
+    data = await get_category_breakdown(db, user_id, month, year)
+    await cache_set(key, jsonable_encoder(data), TTL_ANALYTICS)
+    return data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Endpoint 4 — Monthly trend
+# 4. Monthly trend  (longer TTL — 30 min)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get(
-    "/trend",
-    response_model=MonthlyTrendResponse,
-    summary="Monthly spend trend — line chart (last N months)",
-)
+@router.get("/trend", response_model=MonthlyTrendResponse,
+            summary="Monthly spend trend — line chart")
 async def get_trend_route(
-    months       : int          = Query(default=6, ge=3, le=12, description="Number of months to return"),
+    months       : int          = Query(default=6, ge=3, le=12),
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
     user_id = current_user["id"]
+    key     = analytics_trend_key(user_id, months)
 
-    return await get_monthly_trend(db, user_id, months)
+    cached = await cache_get(key)
+    if cached:
+        return cached
+
+    data = await get_monthly_trend(db, user_id, months)
+    await cache_set(key, jsonable_encoder(data), TTL_ANALYTICS_TREND)
+    return data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Endpoint 5 — Spending heatmap
+# 5. Spending heatmap
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get(
-    "/heatmap",
-    response_model=HeatmapResponse,
-    summary="Daily spend heatmap — calendar view",
-)
+@router.get("/heatmap", response_model=HeatmapResponse,
+            summary="Daily spend heatmap — calendar view")
 async def get_heatmap_route(
     month        : int          = Query(default=None, ge=1, le=12),
     year         : int          = Query(default=None, ge=2020),
     db           : AsyncSession = Depends(get_db),
     current_user : dict         = Depends(get_current_user),
 ):
-    today   = date.today()
-    month   = month or today.month
-    year    = year  or today.year
-    user_id = current_user["id"]
+    month, year = _today_defaults(month, year)
+    user_id     = current_user["id"]
+    key         = analytics_heatmap_key(user_id, month, year)
 
-    return await get_heatmap(db, user_id, month, year)
+    cached = await cache_get(key)
+    if cached:
+        return cached
+
+    data = await get_heatmap(db, user_id, month, year)
+    await cache_set(key, jsonable_encoder(data), TTL_ANALYTICS)
+    return data

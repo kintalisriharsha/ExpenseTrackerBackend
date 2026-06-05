@@ -31,7 +31,7 @@ SMTP_HOST     = os.getenv("SMTP_HOST",     "smtp.gmail.com")
 SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER     = os.getenv("SMTP_USER")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-FROM_NAME     = os.getenv("FROM_NAME", "Expense Tracker")
+FROM_NAME     = os.getenv("FROM_NAME", "Expenzo")
 
 
 # ── HTML template ──────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ def _build_otp_html(otp: str) -> str:
           <td style="background:#1152D4;padding:32px 40px;text-align:center">
             <div style="font-size:20px;font-weight:600;
                         color:#ffffff;margin:0">
-              Expense Tracker
+              Expenzo
             </div>
             <div style="font-size:13px;color:rgba(255,255,255,0.70);
                         margin-top:4px">
@@ -122,22 +122,15 @@ def _build_otp_html(otp: str) -> str:
                     <tr>{digits}</tr>
                   </table>
                 </td>
-                <td align="right"
-                    style="font-size:13px;color:#94A3B8;white-space:nowrap">
-                  &#x23F1; 10 min
-                </td>
               </tr>
             </table>
+
 
             <!-- Warning banner -->
             <table cellpadding="0" cellspacing="0" width="100%"
                    style="margin-bottom:24px">
               <tr>
-                <td width="3"
-                    style="background:#1152D4;border-radius:2px">
-                </td>
-                <td style="padding:12px 16px;background:#F1F5F9;
-                           border-radius:0 8px 8px 0;font-size:13px;
+                <td style="font-size:13px;
                            color:#64748B;line-height:1.6">
                   If you didn&#39;t request this code, you can safely
                   ignore this email. Your account won&#39;t be affected.
@@ -155,7 +148,7 @@ def _build_otp_html(otp: str) -> str:
 
             <p style="margin:0;font-size:12px;color:#94A3B8;line-height:1.7">
               For your security, never share this code with anyone,
-              including Expense Tracker support.
+              including Expenzo support.
             </p>
 
           </td>
@@ -171,7 +164,7 @@ def _build_otp_html(otp: str) -> str:
                                background:#1152D4;border-radius:50%;
                                margin-right:6px;vertical-align:middle">
                   </span>
-                  Expense Tracker
+                  Expenzo
                 </td>
                 <td align="right"
                     style="font-size:12px;color:#CBD5E1">
@@ -197,7 +190,7 @@ def _build_otp_plain(otp: str) -> str:
     Pure string formatting — synchronous.
     """
     return (
-        "EXPENSE TRACKER — SIGN-IN CODE\n\n"
+        "Expenzo — SIGN-IN CODE\n\n"
         f"Your one-time code: {otp}\n\n"
         "Valid for 10 minutes. Do not share it with anyone.\n\n"
         "If you didn't request this, ignore this email — "
@@ -223,7 +216,7 @@ async def send_otp_email(to_email: str, otp: str) -> None:
         raise RuntimeError("SMTP_USER and SMTP_PASSWORD must be set in .env")
 
     msg             = MIMEMultipart("alternative")
-    msg["Subject"]  = f"{otp} is your Expense Tracker code"
+    msg["Subject"]  = f"Expenzo - Login using OTP"
     msg["From"]     = f"{FROM_NAME} <{SMTP_USER}>"
     msg["To"]       = to_email
 
