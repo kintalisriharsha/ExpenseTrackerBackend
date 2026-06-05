@@ -1,8 +1,7 @@
 """
-main.py  (Circuit Breaker + DB fallback)
-─────────────────────────────────────────
-/health now reports circuit breaker state so you can monitor Redis health
-without connecting to Redis directly.
+main.py
+───────
+Startup / shutdown lifecycle, routers, health check, and cron endpoints.
 """
 
 from fastapi import FastAPI, Depends
@@ -27,7 +26,8 @@ from auth.auth import verify_cron_secret
 from crud.setting_crud import carry_forward_all_users
 from crud.budget_crud  import rollover_all_users
 
-from cache import get_redis, close_redis, get_circuit_breaker
+# cache.py exports: _get_redis (private), close_redis (no-op), no circuit breaker
+from cache import close_redis
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -39,23 +39,24 @@ async def lifespan(app: FastAPI):
     logger.warning("Starting Expense Tracker API...")
     await create_tables()
     await warmup_connection_pool()
-    await get_redis()   # warm up Redis + initial circuit breaker state
+    # cache.py uses a lazy singleton — no explicit warmup needed;
+    # the first real cache call will initialise the Upstash HTTP client.
     logger.warning("Startup complete")
     yield
     logger.warning("Shutting down...")
     await close_db()
-    await close_redis()
+    await close_redis()   # no-op for Upstash HTTP client, kept for symmetry
     logger.warning("Shutdown complete")
 
 
 app = FastAPI(
-    title        = "Expense Tracker API",
-    version      = "1.0.0",
-    lifespan     = lifespan,
+    title            = "Expense Tracker API",
+    version          = "1.0.0",
+    lifespan         = lifespan,
     redirect_slashes = False,
-    docs_url     = None,
-    redoc_url    = None,
-    openapi_url  = None,
+    docs_url         = None,
+    redoc_url        = None,
+    openapi_url      = None,
 )
 
 app.include_router(auth_router)
@@ -75,15 +76,17 @@ async def root():
 @app.get("/health")
 async def health():
     db_health = await check_db_health()
-    cb = get_circuit_breaker()
+    # cache.py has no circuit breaker — report Redis as configured/not-configured
+    # based solely on whether the env vars are present.
+    redis_url   = os.getenv("REDIS_URL")
+    redis_token = os.getenv("REDIS_TOKEN")
+    redis_status = "configured" if (redis_url and redis_token) else "disabled (env vars missing)"
 
     return {
         "api"      : "healthy",
         "database" : db_health,
         "redis"    : {
-            # Circuit breaker state is the authoritative Redis health signal.
-            # CLOSED = healthy, OPEN = degraded (using DB fallback), HALF_OPEN = recovering
-            **cb.status_dict(),
+            "status": redis_status,
         },
     }
 
