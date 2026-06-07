@@ -18,7 +18,7 @@ Date/time:
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import datetime, time as dtime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -56,7 +56,7 @@ class ExpenseCreate(BaseModel):
     category       : str             = Field(...)
     notes          : Optional[str]   = Field(None, max_length=500)
     date           : datetime        = Field(..., description="ISO-8601 UTC timestamp")
-    time           : time            = Field(..., description="Time of expense in HH:MM format")
+    time           : dtime           = Field(..., description="Time of expense in HH:MM format")
     contact_name   : Optional[str]   = Field(None, max_length=100)
     contact_number : Optional[str]   = Field(None, max_length=20)
 
@@ -104,7 +104,7 @@ class ExpenseUpdate(BaseModel):
     category       : Optional[str]      = Field(None)
     notes          : Optional[str]      = Field(None, max_length=500)
     date           : Optional[datetime] = Field(None)
-    time           : Optional[time]     = Field(None)
+    time           : Optional[dtime]    = Field(None)
     contact_name   : Optional[str]      = Field(None, max_length=100)
     contact_number : Optional[str]      = Field(None, max_length=20)
 
