@@ -287,6 +287,7 @@ async def edit_expense(
     next_time = update_data.get("time", expense.time)
     if "date" in update_data or "time" in update_data:
         expense.date = _merge_date_and_time(next_date, next_time)
+        expense.time = next_time
 
     for field, value in update_data.items():
         if field in {"date", "time"}:
