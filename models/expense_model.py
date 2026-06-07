@@ -25,7 +25,7 @@ Indexes:
 
 from sqlalchemy import (
     Column, BigInteger, Numeric, String, Text,
-    DateTime, Index, ForeignKey,
+    DateTime, Index, ForeignKey, Time,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -52,6 +52,8 @@ class Expense(Base):
     # Date stored as plain DATE; time stored separately as TIME
     # (matches the frontend storing date & time as separate display strings)
     date = Column(DateTime(timezone=True), nullable=False)     # full timestamp; split on read
+    time = Column(Time, nullable=False)
+    
 
     # ── Contact (optional — user may skip contact picker) ─────────────
     contact_name   = Column(String(100), nullable=True)

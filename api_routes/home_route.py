@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, status
@@ -106,9 +106,8 @@ def _calc_progress(saved: float, target: float) -> float:
     if target <= 0: return 0.0
     return round(min(saved / target * 100, 100.0), 2)
 
-def _fmt_time(dt: datetime) -> str:
-    if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
-    return dt.strftime("%I:%M %p")
+def _fmt_time(value) -> str:
+    return value.strftime("%H:%M")
 
 def _get_current_month_entry(budget_data: dict) -> dict:
     today     = date.today()
@@ -178,7 +177,7 @@ async def _fetch_expenses(user_id: int) -> HomeExpenseSummary:
         expenses=[
             HomeExpenseItem(
                 id=e.id, notes=e.notes or "", category=e.category,
-                amount=float(e.amount), time=_fmt_time(e.date),
+                amount=float(e.amount), time=_fmt_time(e.time),
             )
             for e in all_today[:3]
         ],

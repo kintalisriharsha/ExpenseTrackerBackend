@@ -120,7 +120,7 @@ async def warmup_connection_pool() -> None:
     the cold-start cost of establishing a new Neon connection.
     """
     try:
-        tasks = [_warm_single_connection() for _ in range(5)]
+        tasks = [_warm_single_connection() for _ in range(3)]
         await asyncio.gather(*tasks, return_exceptions=True)
         logger.warning("Connection pool warmed up")
     except Exception:

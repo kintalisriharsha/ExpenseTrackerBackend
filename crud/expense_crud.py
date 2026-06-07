@@ -36,6 +36,15 @@ logger = logging.getLogger(__name__)
 
 # ── Private helper ─────────────────────────────────────────────────────────────
 
+def _merge_date_and_time(base_date: datetime, base_time) -> datetime:
+    """Keep the stored timestamp aligned with the explicit time column."""
+    return base_date.replace(
+        hour=base_time.hour,
+        minute=base_time.minute,
+        second=base_time.second,
+        microsecond=base_time.microsecond,
+    )
+
 def _to_response(expense: Expense) -> ExpenseResponse:
     """
     Map ORM row → ExpenseResponse.
@@ -57,7 +66,7 @@ def _to_response(expense: Expense) -> ExpenseResponse:
         category       = expense.category,
         notes          = expense.notes,
         date           = date_str,                    # "20 May 2026"
-        time           = dt.strftime("%I:%M %p"),     # "01:30 PM"
+        time           = expense.time.strftime("%H:%M"),
         contact_name   = expense.contact_name,
         contact_number = expense.contact_number,
         created_at     = expense.created_at,
@@ -109,7 +118,8 @@ async def add_expense(
         amount         = payload.amount,
         category       = payload.category,
         notes          = payload.notes or "",
-        date           = payload.date,
+        date           = _merge_date_and_time(payload.date, payload.time),
+        time           = payload.time,
         contact_name   = payload.contact_name,
         contact_number = payload.contact_number,
     )
@@ -273,7 +283,14 @@ async def edit_expense(
             detail="No fields supplied to update.",
         )
 
+    next_date = update_data.get("date", expense.date)
+    next_time = update_data.get("time", expense.time)
+    if "date" in update_data or "time" in update_data:
+        expense.date = _merge_date_and_time(next_date, next_time)
+
     for field, value in update_data.items():
+        if field in {"date", "time"}:
+            continue
         setattr(expense, field, value)
 
     await db.flush()

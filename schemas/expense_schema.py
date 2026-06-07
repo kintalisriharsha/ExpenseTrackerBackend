@@ -18,7 +18,7 @@ Date/time:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -47,6 +47,7 @@ class ExpenseCreate(BaseModel):
         "category": "Food",
         "notes": "Lunch at Saravana Bhavan",
         "date": "2026-05-20T13:30:00Z",
+        "time": "09:05",
         "contact_name": "Rahul Kumar",
         "contact_number": "9876543210"
     }
@@ -55,6 +56,7 @@ class ExpenseCreate(BaseModel):
     category       : str             = Field(...)
     notes          : Optional[str]   = Field(None, max_length=500)
     date           : datetime        = Field(..., description="ISO-8601 UTC timestamp")
+    time           : time            = Field(..., description="Time of expense in HH:MM format")
     contact_name   : Optional[str]   = Field(None, max_length=100)
     contact_number : Optional[str]   = Field(None, max_length=20)
 
@@ -93,6 +95,7 @@ class ExpenseUpdate(BaseModel):
         "category": "Transport",
         "notes": "Ola cab to airport",
         "date": "2026-05-20T18:00:00Z",
+        "time": "18:00",
         "contact_name": "Driver Suresh",
         "contact_number": "9123456789"
     }
@@ -101,6 +104,7 @@ class ExpenseUpdate(BaseModel):
     category       : Optional[str]      = Field(None)
     notes          : Optional[str]      = Field(None, max_length=500)
     date           : Optional[datetime] = Field(None)
+    time           : Optional[time]     = Field(None)
     contact_name   : Optional[str]      = Field(None, max_length=100)
     contact_number : Optional[str]      = Field(None, max_length=20)
 
@@ -142,7 +146,7 @@ class ExpenseResponse(BaseModel):
         "category": "Food",
         "notes": "Lunch at Saravana Bhavan",
         "date": "20 May 2026",
-        "time": "01:30 PM",
+        "time": "09:05",
         "contact_name": "Rahul Kumar",
         "contact_number": "9876543210",
         "created_at": "2026-05-20T13:30:00Z",
@@ -155,7 +159,7 @@ class ExpenseResponse(BaseModel):
     category       : str
     notes          : Optional[str]
     date           : str    # "20 May 2026"
-    time           : str    # "01:30 PM"
+    time           : str    # "09:05"
     contact_name   : Optional[str]
     contact_number : Optional[str]
     created_at     : datetime
