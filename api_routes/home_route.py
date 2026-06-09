@@ -14,7 +14,7 @@ HomeResponse now contains 4 sections:
              budget tracks the user's personal spending limits.
 """
 
-from __future__ import annotations
+from __future__ import annotation
 
 import asyncio
 import logging
